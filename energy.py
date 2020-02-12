@@ -18,10 +18,10 @@ MONGODB_HTTP_BIND_PORT = 27017
 
 class Energy:
     def __init__(self, *,
-        mongos: List[Host] = None, sensors: List[Host] = None, grafanas: List[Host] = None,
-        network: List[Host] = None,
-        remote_working_dir: str = "/builds/smartwatts",
-        priors: List[play_on] = [__python3__, __default_python3__, __docker__],
+                 mongos: List[Host] = None, sensors: List[Host] = None, grafanas: List[Host] = None,
+                 network: List[Host] = None,
+                 remote_working_dir: str = "/builds/smartwatts",
+                 priors: List[play_on] = [__python3__, __default_python3__, __docker__],
     ):
         """Deploy an energy monitoring stack: Smartwatts, MongoDB, Grafana. For
         more information about SmartWatts, see (https://powerapi.org), and paper at
@@ -99,105 +99,87 @@ class Energy:
 
         extra_vars = {"mongos_address": mongos_address}
         with play_on(
-            pattern_hosts="sensors", roles=self._roles, extra_vars=extra_vars
+                pattern_hosts="sensors", roles=self._roles, extra_vars=extra_vars
         ) as p:
             volumes = [
                 "/sys:/sys",
                 "/var/lib/docker/containers:/var/lib/docker/containers:ro",
-                "/tmp/powerapi-sensor-reporting:/reporting"
-            ]
+                "/tmp/powerapi-sensor-reporting:/reporting"]
+            name = 'meow-TODO-name'
+            db_name = "db"
+            collection_name = "energy"
 
-            command="powerapi/hwpc-sensor \
-		   -n $NAME \
-		   -r "mongodb" -U "mongodb://ADDR" -D $DB -C $COLLECTION \
-		   -s "rapl" -o -e RAPL_ENERGY_PKG"
+            # (TODO) modify name, must be unique. allow config
+            command=['powerapi/hwpc-sensor',
+                     '-n '+name,
+                     '-r "mongodb"',
+                     '-U "mongodb://0.0.0.0:27017"',
+                     '-D '+ db_name,
+                     '-C '+ collection_name,
+                     '-s "rapl" -o -e RAPL_ENERGY_PKG']
 
             p.docker_container(
                 display_name="Installing PowerAPI sensors",
                 name="powerapi-sensor",
-                image="powerapi-sensor"
+                image="powerapi/hwpc-sensor",
                 detach=True,
                 state="started",
                 recreate="yes",
                 network_mode="host",
                 privileged=True,
                 volumes=volumes,
-                command=command)
-                
+                command=command)            
                     
-        #     p.file(path=self.remote_working_dir, state="directory")
-        #     p.template(
-        #         display_name="Generating the configuration file",
-        #         src=os.path.join(_path, self.agent_conf),
-        #         dest=self.remote_telegraf_conf,
-        #     )
+        # #3 Deploy the graphana server(s)
+        grafana_address = None
+        if self.network is not None:
+            # This assumes that `discover_network` has been run before
+            grafana_address = self.grafanas[0].extra[self.network + "_ip"]
+        else:
+            # NOTE(msimonin): ping on docker bridge address for ci testing
+            grafana_address = "172.17.0.1"
 
-        #     env = {"HOST_PROC": "/rootfs/proc", "HOST_SYS": "/rootfs/sys"}
-        #     env.update(self.agent_env)
-        #     p.docker_container(
-        #         display_name="Installing Telegraf",
-        #         name="telegraf",
-        #         image="telegraf",
-        #         detach=True,
-        #         state="started",
-        #         recreate="yes",
-        #         network_mode="host",
-        #         volumes=volumes,
-        #         env=env,
-        #     )
-
-        # # Deploy the UI
-        # ui_address = None
-        # if self.network is not None:
-        #     # This assumes that `discover_network` has been run before
-        #     ui_address = self.ui[0].extra[self.network + "_ip"]
-        # else:
-        #     # NOTE(msimonin): ping on docker bridge address for ci testing
-        #     ui_address = "172.17.0.1"
-
-        # # Handle port customisation
-        # ui_port = self.ui_env["GF_SERVER_HTTP_PORT"]
-        # with play_on(pattern_hosts="ui", roles=self._roles) as p:
-        #     p.docker_container(
-        #         display_name="Installing Grafana",
-        #         name="grafana",
-        #         image="grafana/grafana",
-        #         detach=True,
-        #         network_mode="host",
-        #         env=self.ui_env,
-        #         recreate="yes",
-        #         state="started",
-        #     )
-        #     p.wait_for(
-        #         display_name="Waiting for grafana to be ready",
-        #         # NOTE(msimonin): ping on docker bridge address for ci testing
-        #         host=ui_address,
-        #         port=ui_port,
-        #         state="started",
-        #         delay=2,
-        #         timeout=120,
-        #     )
-        #     p.uri(
-        #         display_name="Add InfluxDB in Grafana",
-        #         url=f"http://{ui_address}:{ui_port}/api/datasources",
-        #         user="admin",
-        #         password="admin",
-        #         force_basic_auth=True,
-        #         body_format="json",
-        #         method="POST",
-        #         # 409 means: already added
-        #         status_code=[200, 409],
-        #         body=json.dumps(
-        #             {
-        #                 "name": "telegraf",
-        #                 "type": "influxdb",
-        #                 "url": f"http://{collector_address}:{collector_port}",
-        #                 "access": "proxy",
-        #                 "database": "telegraf",
-        #                 "isDefault": True,
-        #             }
-        #         ),
-        #     )
+        with play_on(pattern_hosts="grafanas", roles=self._roles) as p:
+            p.docker_container(
+                display_name="Installing Grafana",
+                name="grafana",
+                image="grafana/grafana",
+                detach=True,
+                network_mode="host",
+                env={"GF_SERVER_HTTP_PORT": f"{GRAFANA_SERVER_HTTP_PORT}"},
+                recreate="yes",
+                state="started",
+            )
+            p.wait_for(
+                display_name="Waiting for grafana to be ready",
+                # NOTE(msimonin): ping on docker bridge address for ci testing
+                host=grafana_address,
+                port=GRAFANA_SERVER_HTTP_PORT,
+                state="started",
+                delay=2,
+                timeout=120,
+            )
+            p.uri(
+                display_name="Add MongoDB in Grafana",
+                url=f"http://{grafana_address}:{GRAFANA_SERVER_HTTP_PORT}/api/datasources",
+                user="admin",
+                password="admin",
+                force_basic_auth=True,
+                body_format="json",
+                method="POST",
+                # 409 means: already added
+                status_code=[200, 409],
+                body=json.dumps(
+                    {
+                        "name": "sensors",
+                        "type": "mongodb",
+                        "url": f"http://{mongos_address}:{MONGODB_HTTP_BIND_PORT}",
+                        "access": "proxy",
+                        "database": "db",
+                        "isDefault": True,
+                    }
+                ),
+            )
 
 
             

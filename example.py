@@ -8,8 +8,8 @@ import logging
 
 
 
-CLUSTER = "paravance"
-SITE = "rennes"
+CLUSTER = "ecotype"
+SITE = "nantes"
 
 # claim the resources
 conf = Configuration.from_settings(job_type="allow_classic_ssh",
