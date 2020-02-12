@@ -5,18 +5,18 @@ from typing import Dict, List, Optional
 
 from enoslib.api import play_on, __python3__, __default_python3__, __docker__
 from enoslib.types import Host, Roles
-from enoslib.service import Service
-from enoslib.utils import _check_path, _to_abs
+from service import Service
+from utils import _check_path, _to_abs
 
 
 
 GRAFANA_SERVER_HTTP_PORT = 3000
 
-MONGODB_HTTP_BIND_PORT = 8086
+MONGODB_HTTP_BIND_PORT = 27017
 
 
 
-class Energy(Service):
+class Energy:
     def __init__(self, *,
         mongos: List[Host] = None, sensors: List[Host] = None, grafanas: List[Host] = None,
         network: List[Host] = None,
@@ -63,7 +63,7 @@ class Energy(Service):
         if self.mongos is None:
             return
 
-        # Some requirements
+        # #0 Retrieve requirements
         with play_on(pattern_hosts="all", roles=self._roles, priors=self.priors) as p:
             p.pip(display_name="Installing python-docker", name="docker")
 
@@ -74,17 +74,16 @@ class Energy(Service):
             p.docker_container(
                 display_name="Installing",
                 name="mongodb",
-                image="mongodb",
+                image="mongo",
                 detach=True,
                 network_mode="host",
                 state="started",
                 recreate="yes",
             )
             p.wait_for(
+                # (TODO) better configuration
                 display_name="Waiting for MongoDB to be ready",
-                # I don't have better solution yet
-                # The ci requirements are a bit annoying...
-                host="172.17.0.1",
+                host="0.0.0.0",
                 port=MONGODB_HTTP_BIND_PORT,
                 state="started",
                 delay=2,
@@ -98,10 +97,34 @@ class Energy(Service):
         else:
             mongos_address = self.mongos[0].address
 
-        # extra_vars = {"mongos_address": mongos_address}
-        # with play_on(
-        #     pattern_hosts="sensors", roles=self._roles, extra_vars=extra_vars
-        # ) as p:
+        extra_vars = {"mongos_address": mongos_address}
+        with play_on(
+            pattern_hosts="sensors", roles=self._roles, extra_vars=extra_vars
+        ) as p:
+            volumes = [
+                "/sys:/sys",
+                "/var/lib/docker/containers:/var/lib/docker/containers:ro",
+                "/tmp/powerapi-sensor-reporting:/reporting"
+            ]
+
+            command="powerapi/hwpc-sensor \
+		   -n $NAME \
+		   -r "mongodb" -U "mongodb://ADDR" -D $DB -C $COLLECTION \
+		   -s "rapl" -o -e RAPL_ENERGY_PKG"
+
+            p.docker_container(
+                display_name="Installing PowerAPI sensors",
+                name="powerapi-sensor",
+                image="powerapi-sensor"
+                detach=True,
+                state="started",
+                recreate="yes",
+                network_mode="host",
+                privileged=True,
+                volumes=volumes,
+                command=command)
+                
+                    
         #     p.file(path=self.remote_working_dir, state="directory")
         #     p.template(
         #         display_name="Generating the configuration file",
@@ -109,12 +132,6 @@ class Energy(Service):
         #         dest=self.remote_telegraf_conf,
         #     )
 
-        #     volumes = [
-        #         f"{self.remote_telegraf_conf}:/etc/telegraf/telegraf.conf",
-        #         "/sys:/rootfs/sys:ro",
-        #         "/proc:/rootfs/proc:ro",
-        #         "/var/run/docker.sock:/var/run/docker.sock:ro",
-        #     ]
         #     env = {"HOST_PROC": "/rootfs/proc", "HOST_SYS": "/rootfs/sys"}
         #     env.update(self.agent_env)
         #     p.docker_container(
