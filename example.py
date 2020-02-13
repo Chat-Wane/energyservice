@@ -6,14 +6,16 @@ from energy import Energy
 
 import logging
 
+logging.basicConfig(level=logging.INFO)
+
 
 
-CLUSTER = "ecotype"
+CLUSTER = "econome"
 SITE = "nantes"
 
 # claim the resources
 conf = Configuration.from_settings(job_type="allow_classic_ssh",
-                                   job_name="test-energy",
+                                   job_name="t3s0-energy",
                                    walltime="00:30:00")
 network = NetworkConfiguration(id="n1",
                                type="prod",
@@ -32,8 +34,6 @@ conf.add_network_conf(network)\
 
 
 
-logging.basicConfig(level=logging.INFO)
-
 provider = G5k(conf)
 roles, networks = provider.init()
 
@@ -43,7 +43,7 @@ m = Energy(mongos=roles["control"], sensors=roles["compute"], grafanas=roles["co
 m.deploy()
 
 ui_address = roles["control"][0].extra["my_network_ip"]
-print("The UI is available at http://%s:3000" % ui_address)
+print("Grafana is available at http://%s:3000" % ui_address)
 print("user=admin, password=admin")
 
 #m.backup()
