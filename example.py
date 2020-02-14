@@ -2,7 +2,10 @@ from enoslib.api import discover_networks
 from enoslib.infra.enos_g5k.provider import G5k
 from enoslib.infra.enos_g5k.configuration import (Configuration,
                                                   NetworkConfiguration)
+from enoslib.service import Locust
+
 from energy import Energy
+
 
 import logging
 
@@ -15,7 +18,7 @@ SITE = "nantes"
 
 # claim the resources
 conf = Configuration.from_settings(job_type="allow_classic_ssh",
-                                   job_name="t3s0-energy",
+                                   job_name="energy-service",
                                    walltime="03:00:00")
 network = NetworkConfiguration(id="n1",
                                type="prod",
@@ -41,10 +44,15 @@ roles = discover_networks(roles, networks)
 
 ## (TODO) add a container to test
 
+#l = Locust(masters=["compute"], mongos=roles["control"])
+
 m = Energy(sensors=roles["compute"], mongos=roles["control"],
            formulas=roles["control"], influxdbs=roles["control"],
            grafana=roles["control"])
+
 m.deploy()
+
+#l.deploy()
 
 ui_address = roles["control"][0].extra["my_network_ip"]
 print("Grafana is available at http://%s:3000" % ui_address)

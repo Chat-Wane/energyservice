@@ -18,8 +18,9 @@ SENSORS_OUTPUT_DB_NAME = "sensors_db"
 SENSORS_OUTPUT_COL_NAME = "energy"
 # (TODO) moar config
 
-GRAFANA_SERVER_HTTP_PORT = 3000
-MONGODB_HTTP_BIND_PORT = 27017
+GRAFANA_PORT = 3000
+MONGODB_PORT = 27017
+INFLUXDB_PORT = 8086
 
 
 
@@ -96,12 +97,11 @@ class Energy (Service):
                 name="mongodb", image="mongo",
                 detach=True, network_mode="host", state="started",
                 recreate=True,
-                published_ports=[f"{MONGODB_HTTP_BIND_PORT}:27017"],
+                published_ports=[f"{MONGODB_PORT}:27017"], ## (TODO) expose env
             )
             p.wait_for(
-                # (TODO) better configuration
                 display_name="Waiting for MongoDB to be ready…",
-                host="localhost", port=MONGODB_HTTP_BIND_PORT, state="started",
+                host="localhost", port="27017", state="started",
                 delay=2, timeout=120,
             )
 
@@ -146,7 +146,7 @@ class Energy (Service):
                 name="influxdb", image="influxdb:1.7-alpine",
                 detach=True, network_mode="host",
                 state="started", recreate=True,
-                exposed_ports="8086:8086",
+                exposed_ports=f"{INFLUXDB_PORT}:8086",
             )
             p.wait_for(
                 display_name="Waiting for InfluxDB to be ready…",
@@ -165,10 +165,12 @@ class Energy (Service):
         with play_on(pattern_hosts="formulas", roles=self._roles) as p:
             command=["-s",
                      "--input mongodb --model HWPCReport",
-                     f"--uri mongodb://{mongos_address}:27017 -d {SENSORS_OUTPUT_DB_NAME} -c {SENSORS_OUTPUT_COL_NAME}",
-                     f"--output influxdb --name power --model PowerReport --uri {influxdbs_address} --port 8086 --db power_report",
-                     f"--output influxdb --name formula --model FormulaReport --uri {influxdbs_address} --port 8086 --db formula_report",
-                     "--formula smartwatts",
+                     f"--uri mongodb://{mongos_address}:{MONGODB_PORT} -d {SENSORS_OUTPUT_DB_NAME} -c {SENSORS_OUTPUT_COL_NAME}",
+                     f"--output influxdb --name power --model PowerReport",
+                     f"--uri {influxdbs_address} --port {INFLUXDB_PORT} --db power_report",
+                     f"--output influxdb --name formula --model FormulaReport",
+                     f"--uri {influxdbs_address} --port {INFLUXDB_PORT} --db formula_report",
+                    "--formula smartwatts",
                      "--cpu-ratio-base 22", "--cpu-ratio-min 12", "--cpu-ratio-max 30", #(TODO) make it auto-discover, take a look at ronan's func
                      "--cpu-error-threshold 2.0", "--dram-error-threshold 2.0",
                      "--disable-dram-formula"] # (TODO) allow configuration
@@ -197,23 +199,22 @@ class Energy (Service):
                 display_name="Installing Grafana…",
                 name="grafana", image="grafana/grafana",
                 detach=True, network_mode="host", recreate=True, state="started",
-                env={"GF_SERVER_HTTP_PORT": f"{GRAFANA_SERVER_HTTP_PORT}"},
+                exposed_ports=f"{GRAFANA_PORT}:3000",
             )
             p.wait_for(
                 display_name="Waiting for grafana to be ready…",
-                host=grafana_address, port=GRAFANA_SERVER_HTTP_PORT,
-                state="started",
+                host="localhost", port="3000", state="started",
                 delay=2, timeout=120,
             )
             p.uri(
                 display_name="Add InfluxDB formula reports in Grafana…",
-                url=f"http://{grafana_address}:{GRAFANA_SERVER_HTTP_PORT}/api/datasources",
+                url=f"http://{grafana_address}:{GRAFANA_PORT}/api/datasources",
                 user="admin", password="admin",
                 force_basic_auth=True,
                 body_format="json", method="POST", status_code=[200, 409], # 409 means: already added
                 body=json.dumps({"name": "formula",
                                  "type": "influxdb",
-                                 "url": f"http://{influxdbs_address}:8086",
+                                 "url": f"http://{influxdbs_address}:{INFLUXDB_PORT}",
                                  "access": "proxy",
                                  "database": "formula_report",
                                  "isDefault": True}
@@ -221,13 +222,13 @@ class Energy (Service):
             )
             p.uri( ## (TODO) find a better way to add data sources to grafana
                 display_name="Add InfluxDB power reports in Grafana…",
-                url=f"http://{grafana_address}:{GRAFANA_SERVER_HTTP_PORT}/api/datasources",
+                url=f"http://{grafana_address}:{GRAFANA_PORT}/api/datasources",
                 user="admin", password="admin",
                 force_basic_auth=True,
                 body_format="json", method="POST", status_code=[200, 409], # 409 means: already added
                 body=json.dumps({"name": "power",
                                  "type": "influxdb",
-                                 "url": f"http://{influxdbs_address}:8086",
+                                 "url": f"http://{influxdbs_address}:{INFLUXDB_PORT}",
                                  "access": "proxy",
                                  "database": "power_report",
                                  "isDefault": False}
