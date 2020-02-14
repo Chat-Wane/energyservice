@@ -27,12 +27,14 @@ class Energy (Service):
                  network: Network = None,
                  remote_working_dir: str = "/builds/smartwatts",
                  priors: List[play_on] = [__python3__, __default_python3__, __docker__],
+                 ## (TODO) sensor(s) -> mongo(s) -> smartwatts(s) -> influxdb(s) -> (grafana)
     ):
-        """Deploy an energy monitoring stack: Smartwatts, MongoDB, Grafana. For
-        more information about SmartWatts, see (https://powerapi.org), and paper at
-        (https://arxiv.org/abs/2001.02505).
-        Monitored nodes must run on a Linux distribution, CPUs of monitored nodes
-        must have an intel Sandy Bridge architecture or higher.
+        """Deploy an energy monitoring stack:
+        HWPC-sensor(s) -> MongoDB(s) -> SmartWatts(s) -> InfluxDB(s) -> (Grafana).        
+        For more information about SmartWatts, see (https://powerapi.org), and
+        paper at (https://arxiv.org/abs/2001.02505).  Monitored nodes must run
+        on a Linux distribution, CPUs of monitored nodes must have an
+        intel Sandy Bridge architecture or higher.
 
         Args:
             mongos: list of :py:class:`enoslib.Host` about to host a MongoDB
@@ -78,22 +80,16 @@ class Energy (Service):
         with play_on(pattern_hosts="mongos", roles=self._roles) as p:
             p.docker_container(
                 display_name="Installing mongodb…",
-                name="mongodb",
-                image="mongo",
-                detach=True,
-                network_mode="host",
-                state="started",
+                name="mongodb", image="mongo",
+                detach=True, network_mode="host", state="started",
                 recreate=True,
                 published_ports=[f"{MONGODB_HTTP_BIND_PORT}:27017"],
             )
             p.wait_for(
                 # (TODO) better configuration
                 display_name="Waiting for MongoDB to be ready…",
-                host="localhost",
-                port=MONGODB_HTTP_BIND_PORT,
-                state="started",
-                delay=2,
-                timeout=120,
+                host="localhost", port=MONGODB_HTTP_BIND_PORT, state="started",
+                delay=2, timeout=120,
             )
 
         # #2 Deploy energy sensors
@@ -104,94 +100,72 @@ class Energy (Service):
         else:
             mongos_address = self.mongos[0].address
 
-        extra_vars = {"mongos_address_vars": mongos_address}
+        db_name = "sensors"
+        collection_name = "energy"
         
-        with play_on(
-                pattern_hosts="sensors", roles=self._roles, extra_vars=extra_vars
-        ) as p:
-            volumes = [
-                "/sys:/sys",
-                "/var/lib/docker/containers:/var/lib/docker/containers:ro",
-                "/tmp/powerapi-sensor-reporting:/reporting"]
-            name = 'meow-TODO-name'
-            
-            db_name = "db"
-            collection_name = "energy"
-            
+        with play_on(pattern_hosts="sensors", roles=self._roles, extra_vars=extra_vars) as p:
+            volumes = ["/sys:/sys",
+                       "/var/lib/docker/containers:/var/lib/docker/containers:ro",
+                       "/tmp/powerapi-sensor-reporting:/reporting"]
+
             # (TODO) modify name, must be unique. allow config
-            command=[#'powerapi/hwpc-sensor',
-                     '-n meow-{{inventory_hostname_short}}',
-                     '-r "mongodb"',
-                     # f'-U "mongodb://{mongos_address}:27017"', # to please Ronan
-                     '-U "mongodb://{{mongos_address_vars}}:27017"',
-                     '-D '+ db_name,
-                     '-C '+ collection_name,
+            command=['-n meow-{{inventory_hostname_short}}', '-r "mongodb"',
+                     f'-U "mongodb://{mongos_address}:27017"', # to please Ronan
+                     #'-U "mongodb://{{mongos_address_vars}}:27017"',
+                     f'-D {db_name}', f'-C {collection_name}',
                      '-s "rapl" -o -e RAPL_ENERGY_PKG',
                      '-s "msr" -e "TSC" -e "APERF" -e "MPERF"',
 		     '-c "core"',
-                     #'-e "CPU_CLK_THREAD_UNHALTED:REF_P"',
+                     #'-e "CPU_CLK_THREAD_UNHALTED:REF_P"', ## (TODO) check possible event_name depending on cpu architecture
                      #'-e "CPU_CLK_THREAD_UNHALTED:THREAD_P"',
                      '-e "LLC_MISSES" -e "INSTRUCTIONS_RETIRED"']
 
             p.docker_container(
                 display_name="Installing PowerAPI sensors…",
-                name="powerapi-sensor",
-                image="powerapi/hwpc-sensor",
-                detach=True,
-                state="started",
-                recreate=True,
-                network_mode="host",
+                name="powerapi-sensor", image="powerapi/hwpc-sensor",
+                detach=True, state="started", recreate=True, network_mode="host",
                 privileged=True,
                 volumes=volumes,
-                command=command)
+                command=command,
+            )
 
         # (TODO) change role name
+
+        # #3 deploy InfluxDB, it will be the output of SmartWatts and
+        # the input of the optional Grafana.
         with play_on(pattern_hosts="mongos", roles=self._roles) as p:
             p.docker_container(
                 display_name="Installing InfluxDB…",
-                name="influxdb",
-                image="influxdb:1.7-alpine",
-                detach=True,
-                network_mode="host",
-                state="started",
-                recreate=True,
+                name="influxdb", image="influxdb:1.7-alpine",
+                detach=True, network_mode="host",
+                state="started", recreate=True,
                 exposed_ports="8086:8086",
             )
             p.wait_for(
                 display_name="Waiting for InfluxDB to be ready…",
-                host="localhost",
-                port="8086",
-                state="started",
-                delay=2,
-                timeout=120,
+                host="localhost", port="8086", state="started",
+                delay=2, timeout=120,
             )
 
+        # #4 deploy SmartWatts
         with play_on(pattern_hosts="mongos", roles=self._roles) as p:
             command=["-s",
                      f"--input mongodb --model HWPCReport --uri mongodb://{mongos_address}:27017 -d db -c energy",
-                     f"--output influxdb --name power --model PowerReport --uri http://{mongos_address} --port 8086 --db power_report",
-                     f"--output influxdb --name formula --model FormulaReport --uri http://{mongos_address} --port 8086 --db formula_report",
-                     "--formula smartwatts --cpu-ratio-base 22",
-                     "--cpu-ratio-min 12",
-                     "--cpu-ratio-max 30",
-                     "--cpu-error-threshold 2.0",
-                     "--dram-error-threshold 2.0",
+                     f"--output influxdb --name power --model PowerReport --uri {mongos_address} --port 8086 --db power_report",
+                     f"--output influxdb --name formula --model FormulaReport --uri {mongos_address} --port 8086 --db formula_report",
+                     "--formula smartwatts",
+                     "--cpu-ratio-base 22", "--cpu-ratio-min 12", "--cpu-ratio-max 30",
+                     "--cpu-error-threshold 2.0", "--dram-error-threshold 2.0",
                      "--disable-dram-formula"]
             
             p.docker_container(
                 display_name="Installing smartwatts formula…",
-                name="smartwatts",
-                image="powerapi/smartwatts-formula",
-                detach=True,
-                network_mode="host",
-                command=' '.join(command),
+                name="smartwatts", image="powerapi/smartwatts-formula",
+                detach=True, network_mode="host", recreate=True,
+                command=command,
             )
             
-        # #3 Deploy the graphana server(s)
-        ## Note: ansible executes commands from the machine itself, so localhost would work.
-        ## however, it could be interesting to "wait_for" by pinging and going outside the
-        ## local machine, to know if it is accessible from the outside, as an additional
-        ## test. This is (TODO).
+        # #5 Deploy the graphana server, (TODO) make it optional
         grafana_address = None
         if self.network is not None:
             # This assumes that `discover_network` has been run before
@@ -204,31 +178,22 @@ class Energy (Service):
         with play_on(pattern_hosts="grafanas", roles=self._roles) as p:
             p.docker_container(
                 display_name="Installing Grafana…",
-                name="grafana",
-                image="grafana/grafana",
-                detach=True,
-                network_mode="host",
+                name="grafana", image="grafana/grafana",
+                detach=True, network_mode="host", recreate=True, state="started",
                 env={"GF_SERVER_HTTP_PORT": f"{GRAFANA_SERVER_HTTP_PORT}"},
-                recreate=True,
-                state="started",
             )
             p.wait_for(
                 display_name="Waiting for grafana to be ready…",
-                host=grafana_address,
-                port=GRAFANA_SERVER_HTTP_PORT,
+                host=grafana_address, port=GRAFANA_SERVER_HTTP_PORT,
                 state="started",
-                delay=2,
-                timeout=120,
+                delay=2, timeout=120,
             )
             p.uri(
                 display_name="Add InfluxDB in Grafana…",
                 url=f"http://{grafana_address}:{GRAFANA_SERVER_HTTP_PORT}/api/datasources",
-                user="admin",
-                password="admin",
+                user="admin", password="admin",
                 force_basic_auth=True,
-                body_format="json",
-                method="POST",
-                status_code=[200, 409], # 409 means: already added
+                body_format="json", method="POST", status_code=[200, 409], # 409 means: already added
                 body=json.dumps({
                     "name": "sensors",
                     "type": "influxdb",
