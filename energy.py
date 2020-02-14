@@ -12,34 +12,43 @@ import logging
 
 logging.basicConfig(level=logging.DEBUG)
 
-
 
 
-GRAFANA_SERVER_HTTP_PORT = 3000
+SENSORS_OUTPUT_DB_NAME = "sensors_db"
+SENSORS_OUTPUT_COL_NAME = "energy"
+# (TODO) moar config
 
+GRAFANA_SERVER_HTTP_PORT = 3000
 MONGODB_HTTP_BIND_PORT = 27017
 
 
 
 class Energy (Service):
     def __init__(self, *,
-                 mongos: List[Host] = [], sensors: List[Host] = [], grafanas: List[Host] = [],
+                 sensors: List[Host] = [], mongos: List[Host] = [],
+                 formulas: List[Host] = [], influxdbs = [], grafana: Host = None,
                  network: Network = None,
                  remote_working_dir: str = "/builds/smartwatts",
                  priors: List[play_on] = [__python3__, __default_python3__, __docker__],
-                 ## (TODO) sensor(s) -> mongo(s) -> smartwatts(s) -> influxdb(s) -> (grafana)
     ):
         """Deploy an energy monitoring stack:
         HWPC-sensor(s) -> MongoDB(s) -> SmartWatts(s) -> InfluxDB(s) -> (Grafana).        
         For more information about SmartWatts, see (https://powerapi.org), and
         paper at (https://arxiv.org/abs/2001.02505).  Monitored nodes must run
-        on a Linux distribution, CPUs of monitored nodes must have an
+        on a Linux distribution; CPUs of monitored nodes must have an
         intel Sandy Bridge architecture or higher.
 
         Args:
-            mongos: list of :py:class:`enoslib.Host` about to host a MongoDB
             sensors: list of :py:class:`enoslib.Host` about to host an energy sensor
-            grafanas: list of :py:class:`enoslib.Host` about to host a grafana
+            mongos: list of :py:class:`enoslib.Host` about to host a MongoDB to store
+                the output of sensors
+            formulas: list of :py:class:`enoslib.Host` about to host a formulas that
+                decompose energy data and assign to each vm/container/proc their energy
+                consumption
+            influxdbs: list of :py:class:`enoslib.Host` about to host a InfluxDB to
+                store the output of formulas
+            grafana: optional :py:class:`enoslib.Host` about to host a grafana to read
+                InfluxDB energy consumption data
             network: network role to use for the monitoring traffic.
                            Agents will us this network to send their metrics to
                            the collector. If none is given, the agent will us
@@ -47,18 +56,27 @@ class Energy (Service):
                            the mongos (the first on currently)
             prior: priors to apply
         """
+        # (TODO) maybe there is only one mongo, formula, influx, grafana. check
+        # if it can be distributed for real.
         # (TODO) include environment configurations back
         # Some initialisation and make mypy happy
-        self.mongos = mongos
         self.sensors = sensors
-        self.grafanas = grafanas
-        assert self.mongos is not None
-        assert self.sensors is not None
-        assert self.grafanas is not None
+        self.mongos = mongos
+        self.formulas = formulas
+        self.influxdbs = influxdbs
+        self.grafana = grafana
 
+        assert self.sensors is not None
+        assert self.mongos is not None
+        assert self.formulas is not None
+        assert self.influxdbs is not None
+        ## (TODO) more asserts to be sure the configuration is sound
+        
         self.network = network
         self._roles: Roles = {}
-        self._roles.update(mongos=self.mongos, sensors=self.sensors, grafanas=self.grafanas)
+        self._roles.update(sensors=self.sensors, mongos=self.mongos,
+                           formulas=self.formulas, influxdbs=self.influxdbs,
+                           grafana=self.grafana)
         self.remote_working_dir = remote_working_dir
         
         self.priors = priors
@@ -67,16 +85,11 @@ class Energy (Service):
 
     def deploy(self):
         """Deploy the energy monitoring stack"""
-        if self.mongos is None:
-            return
-
         # #0 Retrieve requirements
         with play_on(pattern_hosts="all", roles=self._roles, priors=self.priors) as p:
             p.pip(display_name="Installing python-docker", name="docker")
 
-        # #1 Deploy mongodb collectors
-        # _path = os.path.abspath(os.path.dirname(os.path.realpath(__file__)))
-
+        # #1 Deploy MongoDB collectors
         with play_on(pattern_hosts="mongos", roles=self._roles) as p:
             p.docker_container(
                 display_name="Installing mongodb…",
@@ -99,26 +112,20 @@ class Energy (Service):
             mongos_address = self.mongos[0].extra[self.network + "_ip"]
         else:
             mongos_address = self.mongos[0].address
-
-        db_name = "sensors"
-        collection_name = "energy"
         
-        with play_on(pattern_hosts="sensors", roles=self._roles, extra_vars=extra_vars) as p:
+        with play_on(pattern_hosts="sensors", roles=self._roles) as p:
             volumes = ["/sys:/sys",
                        "/var/lib/docker/containers:/var/lib/docker/containers:ro",
-                       "/tmp/powerapi-sensor-reporting:/reporting"]
-
-            # (TODO) modify name, must be unique. allow config
-            command=['-n meow-{{inventory_hostname_short}}', '-r "mongodb"',
-                     f'-U "mongodb://{mongos_address}:27017"', # to please Ronan
-                     #'-U "mongodb://{{mongos_address_vars}}:27017"',
-                     f'-D {db_name}', f'-C {collection_name}',
+                       "/tmp/powerapi-sensor-reporting:/reporting"]            
+            command=['-n sensor-{{inventory_hostname_short}}', '-r "mongodb"',
+                     f'-U "mongodb://{mongos_address}:27017"', # alt to please Ronan: #'-U "mongodb://{{mongos_address_vars}}:27017"',
+                     f'-D {SENSORS_OUTPUT_DB_NAME}', f'-C {SENSORS_OUTPUT_COL_NAME}',
                      '-s "rapl" -o -e RAPL_ENERGY_PKG',
                      '-s "msr" -e "TSC" -e "APERF" -e "MPERF"',
 		     '-c "core"',
                      #'-e "CPU_CLK_THREAD_UNHALTED:REF_P"', ## (TODO) check possible event_name depending on cpu architecture
                      #'-e "CPU_CLK_THREAD_UNHALTED:THREAD_P"',
-                     '-e "LLC_MISSES" -e "INSTRUCTIONS_RETIRED"']
+                     '-e "LLC_MISSES" -e "INSTRUCTIONS_RETIRED"'] # (TODO) allow more configurations
 
             p.docker_container(
                 display_name="Installing PowerAPI sensors…",
@@ -133,7 +140,7 @@ class Energy (Service):
 
         # #3 deploy InfluxDB, it will be the output of SmartWatts and
         # the input of the optional Grafana.
-        with play_on(pattern_hosts="mongos", roles=self._roles) as p:
+        with play_on(pattern_hosts="influxdbs", roles=self._roles) as p:
             p.docker_container(
                 display_name="Installing InfluxDB…",
                 name="influxdb", image="influxdb:1.7-alpine",
@@ -148,15 +155,23 @@ class Energy (Service):
             )
 
         # #4 deploy SmartWatts
-        with play_on(pattern_hosts="mongos", roles=self._roles) as p:
+        if self.network is not None:
+            # This assumes that `discover_network` has been run before
+            # otherwise, extra is not set properly
+            influxdbs_address = self.influxdbs[0].extra[self.network + "_ip"]
+        else:
+            influxdbs_address = self.influxdbs[0].address
+
+        with play_on(pattern_hosts="formulas", roles=self._roles) as p:
             command=["-s",
-                     f"--input mongodb --model HWPCReport --uri mongodb://{mongos_address}:27017 -d db -c energy",
-                     f"--output influxdb --name power --model PowerReport --uri {mongos_address} --port 8086 --db power_report",
-                     f"--output influxdb --name formula --model FormulaReport --uri {mongos_address} --port 8086 --db formula_report",
+                     "--input mongodb --model HWPCReport",
+                     f"--uri mongodb://{mongos_address}:27017 -d {SENSORS_OUTPUT_DB_NAME} -c {SENSORS_OUTPUT_COL_NAME}",
+                     f"--output influxdb --name power --model PowerReport --uri {influxdbs_address} --port 8086 --db power_report",
+                     f"--output influxdb --name formula --model FormulaReport --uri {influxdbs_address} --port 8086 --db formula_report",
                      "--formula smartwatts",
-                     "--cpu-ratio-base 22", "--cpu-ratio-min 12", "--cpu-ratio-max 30",
+                     "--cpu-ratio-base 22", "--cpu-ratio-min 12", "--cpu-ratio-max 30", #(TODO) make it auto-discover, take a look at ronan's func
                      "--cpu-error-threshold 2.0", "--dram-error-threshold 2.0",
-                     "--disable-dram-formula"]
+                     "--disable-dram-formula"] # (TODO) allow configuration
             
             p.docker_container(
                 display_name="Installing smartwatts formula…",
@@ -169,13 +184,15 @@ class Energy (Service):
         grafana_address = None
         if self.network is not None:
             # This assumes that `discover_network` has been run before
-            grafana_address = self.grafanas[0].extra[self.network + "_ip"]
+            grafana_address = self.grafana[0].extra[self.network + "_ip"]
         else:
             # NOTE(msimonin): ping on docker bridge address for ci testing
             grafana_address = "localhost"
 
         # (TODO) tag with the proper version of containerS
-        with play_on(pattern_hosts="grafanas", roles=self._roles) as p:
+        if self.grafana is None:
+            return
+        with play_on(pattern_hosts="grafana", roles=self._roles) as p:
             p.docker_container(
                 display_name="Installing Grafana…",
                 name="grafana", image="grafana/grafana",
@@ -189,20 +206,34 @@ class Energy (Service):
                 delay=2, timeout=120,
             )
             p.uri(
-                display_name="Add InfluxDB in Grafana…",
+                display_name="Add InfluxDB formula reports in Grafana…",
                 url=f"http://{grafana_address}:{GRAFANA_SERVER_HTTP_PORT}/api/datasources",
                 user="admin", password="admin",
                 force_basic_auth=True,
                 body_format="json", method="POST", status_code=[200, 409], # 409 means: already added
-                body=json.dumps({
-                    "name": "sensors",
-                    "type": "influxdb",
-                    "url": f"http://{mongos_address}:8086",
-                    "access": "proxy",
-                    "database": "db",
-                    "isDefault": True,
-                }),
+                body=json.dumps({"name": "formula",
+                                 "type": "influxdb",
+                                 "url": f"http://{influxdbs_address}:8086",
+                                 "access": "proxy",
+                                 "database": "formula_report",
+                                 "isDefault": True}
+                ),
             )
+            p.uri( ## (TODO) find a better way to add data sources to grafana
+                display_name="Add InfluxDB power reports in Grafana…",
+                url=f"http://{grafana_address}:{GRAFANA_SERVER_HTTP_PORT}/api/datasources",
+                user="admin", password="admin",
+                force_basic_auth=True,
+                body_format="json", method="POST", status_code=[200, 409], # 409 means: already added
+                body=json.dumps({"name": "power",
+                                 "type": "influxdb",
+                                 "url": f"http://{influxdbs_address}:8086",
+                                 "access": "proxy",
+                                 "database": "power_report",
+                                 "isDefault": False}
+                ),
+            )
+
 
 
             

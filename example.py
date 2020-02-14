@@ -39,7 +39,11 @@ roles, networks = provider.init()
 
 roles = discover_networks(roles, networks)
 
-m = Energy(mongos=roles["control"], sensors=roles["compute"], grafanas=roles["control"])
+## (TODO) add a container to test
+
+m = Energy(sensors=roles["compute"], mongos=roles["control"],
+           formulas=roles["control"], influxdbs=roles["control"],
+           grafana=roles["control"])
 m.deploy()
 
 ui_address = roles["control"][0].extra["my_network_ip"]
