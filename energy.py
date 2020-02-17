@@ -1,12 +1,14 @@
 import json
-from pathlib import Path
 import os
+import time
+from waiting import wait, TimeoutExpired # 1.4.1
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from enoslib.api import play_on, __python3__, __default_python3__, __docker__
 from enoslib.types import Host, Roles, Network
-from service import Service
-from utils import _check_path, _to_abs
+from service import Service ## (TODO import from enoslib)
+from utils import _check_path, _to_abs, _get_cpu ## (TODO) import from enoslib
 
 import logging
 
@@ -17,6 +19,7 @@ logging.basicConfig(level=logging.DEBUG)
 SENSORS_OUTPUT_DB_NAME = "sensors_db"
 SENSORS_OUTPUT_COL_NAME = "energy"
 # (TODO) moar config
+ENABLE_DRAM = True
 
 GRAFANA_PORT = 3000
 MONGODB_PORT = 27017
@@ -60,6 +63,9 @@ class Energy (Service):
         # (TODO) maybe there is only one mongo, formula, influx, grafana. check
         # if it can be distributed for real.
         # (TODO) include environment configurations back
+        # (TODO) check what happens with multi CPU machines and multi core
+        # CPU
+        
         # Some initialisation and make mypy happy
         self.sensors = sensors
         self.mongos = mongos
@@ -118,13 +124,18 @@ class Energy (Service):
                        "/var/lib/docker/containers:/var/lib/docker/containers:ro",
                        "/tmp/powerapi-sensor-reporting:/reporting"]            
             command=['-n sensor-{{inventory_hostname_short}}', '-r "mongodb"',
-                     f'-U "mongodb://{mongos_address}:27017"', # alt to please Ronan: #'-U "mongodb://{{mongos_address_vars}}:27017"',
+                     f'-U "mongodb://{mongos_address}:27017"', ## MONGO
                      f'-D {SENSORS_OUTPUT_DB_NAME}', f'-C {SENSORS_OUTPUT_COL_NAME}',
-                     '-s "rapl" -o -e RAPL_ENERGY_PKG',
+                     '-s "rapl" -o -e RAPL_ENERGY_PKG ', ## RAPL
+                     '-e "RAPL_ENERGY_DRAM"', # (TODO) enable disable
+                     '-e "RAPL_ENERGY_CORES"', # (TODO) check
+                     '-e "RAPL_ENERGY_GPU"', # (TODO) check
                      '-s "msr" -e "TSC" -e "APERF" -e "MPERF"',
-		     '-c "core"',
-                     #'-e "CPU_CLK_THREAD_UNHALTED:REF_P"', ## (TODO) check possible event_name depending on cpu architecture
+		     '-c "core"', ## CORE
+                     #'-e "CPU_CLK_THREAD_UNHALTED:REF_P"', ## (TODO) check possible event_name depending on cpu architecture # here nehalem & westmere
                      #'-e "CPU_CLK_THREAD_UNHALTED:THREAD_P"',
+                     #'-e "CPU_CLK_THREAD_UNHALTED:REF_XCLK"', # sandy -> broadwell archi, not scaled! hence result must be scaled by the base ratio. not sure properly handled by sensor though
+                     #'-e "CPU_CLK_THREAD_UNHALTED.REF_XCLK"', # skylake and newer, result must be scale by x4 the base ratio. not sure handled by sensor though
                      '-e "LLC_MISSES" -e "INSTRUCTIONS_RETIRED"'] # (TODO) allow more configurations
 
             p.docker_container(
@@ -135,8 +146,6 @@ class Energy (Service):
                 volumes=volumes,
                 command=command,
             )
-
-        # (TODO) change role name
 
         # #3 deploy InfluxDB, it will be the output of SmartWatts and
         # the input of the optional Grafana.
@@ -162,16 +171,43 @@ class Energy (Service):
         else:
             influxdbs_address = self.influxdbs[0].address
 
+
+        # utils = open('utils.py', 'r').read()
+        # with play_on(pattern_hosts="formulas", roles=self._roles) as p:
+        #     p.copy(display_name="copy ", src="./utils.py", dest="/utils.py")
+        # result = run_command(f"echo '_get_cpu()' >> /utils.py; python3 /utils.py",
+        #                      roles=self._roles, pattern_hosts="formulas")
+
+            
         with play_on(pattern_hosts="formulas", roles=self._roles) as p:
+            # (TODO) ask for a better way to retrieve a result from remote
+            p.shell('lscpu > /tmp/lscpu')
+            p.fetch(
+                display_name="Retrieving the result of lscpu…",
+                src='/tmp/lscpu', dest='./_tmp_enos_/lscpu', flat=True,
+            )
+            try :
+                wait(Path('_tmp_enos_/lscpu').is_file, timeout_seconds=10)
+                time.sleep(1)
+                with open('./_tmp_enos_/lscpu') as f: lscpu = f.read()
+                logging.debug(lscpu) ## (does not seem to be awaiting results)
+                cpu_feat = _get_cpu(lscpu)
+                Path('./_tmp_enos_/lscpu').unlink()
+            except (OSError, IOError, KeyError, TimeoutExpired):
+                logging.error("Could not retrieve CPU features…")
+                raise
+                
             command=["-s",
                      "--input mongodb --model HWPCReport",
                      f"--uri mongodb://{mongos_address}:{MONGODB_PORT} -d {SENSORS_OUTPUT_DB_NAME} -c {SENSORS_OUTPUT_COL_NAME}",
-                     f"--output influxdb --name power --model PowerReport",
+                     f"--output influxdb --name power --model HPWCReport",
+                     f"--uri {influxdbs_address} --port {INFLUXDB_PORT} --db hwpc_report",
+                     f"--output influxdb --name formula --model PowerReport",
                      f"--uri {influxdbs_address} --port {INFLUXDB_PORT} --db power_report",
                      f"--output influxdb --name formula --model FormulaReport",
                      f"--uri {influxdbs_address} --port {INFLUXDB_PORT} --db formula_report",
-                    "--formula smartwatts",
-                     "--cpu-ratio-base 22", "--cpu-ratio-min 12", "--cpu-ratio-max 30", #(TODO) make it auto-discover, take a look at ronan's func
+                     "--formula smartwatts", f"--cpu-ratio-base {cpu_feat[2]}",
+                     f"--cpu-ratio-min {cpu_feat[0]}", f"--cpu-ratio-max {cpu_feat[1]}", 
                      "--cpu-error-threshold 2.0", "--dram-error-threshold 2.0",
                      "--disable-dram-formula"] # (TODO) allow configuration
             

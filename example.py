@@ -19,7 +19,7 @@ SITE = "nantes"
 # claim the resources
 conf = Configuration.from_settings(job_type="allow_classic_ssh",
                                    job_name="energy-service",
-                                   walltime="03:00:00")
+                                   walltime="02:00:00")
 network = NetworkConfiguration(id="n1",
                                type="prod",
                                roles=["my_network"],
