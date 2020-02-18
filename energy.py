@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 from enoslib.api import play_on, __python3__, __default_python3__, __docker__
 from enoslib.types import Host, Roles, Network
 from service import Service ## (TODO import from enoslib)
-from utils import _check_path, _to_abs, _get_cpu ## (TODO) import from enoslib
+from utils import _check_path, _to_abs, CPU ## (TODO) import from enoslib
 
 import logging
 
@@ -24,6 +24,12 @@ ENABLE_DRAM = True
 GRAFANA_PORT = 3000
 MONGODB_PORT = 27017
 INFLUXDB_PORT = 8086
+
+INFLUXDB_VERSION = "1.7-alpine"
+MONGODB_VERSION = "4.2.3"
+GRAFANA_VERSION = "latest" ## (TODO change)
+HWPCSENSOR_VERSION = "0.1.1"
+SMARTWATTS_VERSION = "0.4.1"
 
 
 
@@ -100,7 +106,7 @@ class Energy (Service):
         with play_on(pattern_hosts="mongos", roles=self._roles) as p:
             p.docker_container(
                 display_name="Installing mongodb…",
-                name="mongodb", image="mongo",
+                name="mongodb", image=f"mongo:{MONGODB_VERSION}",
                 detach=True, network_mode="host", state="started",
                 recreate=True,
                 published_ports=[f"{MONGODB_PORT}:27017"], ## (TODO) expose env
@@ -120,27 +126,31 @@ class Energy (Service):
             mongos_address = self.mongos[0].address
         
         with play_on(pattern_hosts="sensors", roles=self._roles) as p:
+            # (TODO) check without volumes, it potentially uses volumes to read about
+            # events and containers... maybe it is mandatory then.
             volumes = ["/sys:/sys",
                        "/var/lib/docker/containers:/var/lib/docker/containers:ro",
                        "/tmp/powerapi-sensor-reporting:/reporting"]            
-            command=['-n sensor-{{inventory_hostname_short}}', '-r "mongodb"',
-                     f'-U "mongodb://{mongos_address}:27017"', ## MONGO
-                     f'-D {SENSORS_OUTPUT_DB_NAME}', f'-C {SENSORS_OUTPUT_COL_NAME}',
-                     '-s "rapl" -o -e RAPL_ENERGY_PKG ', ## RAPL
-                     '-e "RAPL_ENERGY_DRAM"', # (TODO) enable disable
-                     '-e "RAPL_ENERGY_CORES"', # (TODO) check
-                     '-e "RAPL_ENERGY_GPU"', # (TODO) check
-                     '-s "msr" -e "TSC" -e "APERF" -e "MPERF"',
-		     '-c "core"', ## CORE
+            command=['-n sensor-{{inventory_hostname_short}}',
+                     f'-r mongodb -U mongodb://{mongos_address}:27017', ## MONGO
+                     f'-D {SENSORS_OUTPUT_DB_NAME} -C {SENSORS_OUTPUT_COL_NAME}',
+                     '-s rapl -o', ## RAPL: Running Average Power Limit (need privileged)
+                     '-e RAPL_ENERGY_PKG', # power consumption of all cores + LLc cache
+                     '-e RAPL_ENERGY_DRAM', # power consumption of DRAM
+                     '-e RAPL_ENERGY_CORES', # power consumption of all cores on socket
+                     # '-e "RAPL_ENERGY_GPU"', # power consumption of GPU 
+                     '-s msr -e TSC -e APERF -e MPERF',
+		     '-c core', ## CORE (TODO) does not seem to work properly this part
                      #'-e "CPU_CLK_THREAD_UNHALTED:REF_P"', ## (TODO) check possible event_name depending on cpu architecture # here nehalem & westmere
                      #'-e "CPU_CLK_THREAD_UNHALTED:THREAD_P"',
-                     #'-e "CPU_CLK_THREAD_UNHALTED:REF_XCLK"', # sandy -> broadwell archi, not scaled! hence result must be scaled by the base ratio. not sure properly handled by sensor though
+                     #'-e "CPU_CLK_THREAD_UNHALTED.REF_XCLK"', # sandy -> broadwell archi, not scaled! hence result must be scaled by the base ratio. not sure properly handled by sensor though
                      #'-e "CPU_CLK_THREAD_UNHALTED.REF_XCLK"', # skylake and newer, result must be scale by x4 the base ratio. not sure handled by sensor though
-                     '-e "LLC_MISSES" -e "INSTRUCTIONS_RETIRED"'] # (TODO) allow more configurations
+                     '-e LLC_MISSES -e INSTRUCTIONS_RETIRED']
 
             p.docker_container(
                 display_name="Installing PowerAPI sensors…",
-                name="powerapi-sensor", image="powerapi/hwpc-sensor",
+                name="powerapi-sensor",
+                image=f"powerapi/hwpc-sensor:{HWPCSENSOR_VERSION}",
                 detach=True, state="started", recreate=True, network_mode="host",
                 privileged=True,
                 volumes=volumes,
@@ -152,9 +162,8 @@ class Energy (Service):
         with play_on(pattern_hosts="influxdbs", roles=self._roles) as p:
             p.docker_container(
                 display_name="Installing InfluxDB…",
-                name="influxdb", image="influxdb:1.7-alpine",
-                detach=True, network_mode="host",
-                state="started", recreate=True,
+                name="influxdb", image=f"influxdb:{INFLUXDB_VERSION}",
+                detach=True, state="started", recreate=True, network_mode="host",
                 exposed_ports=f"{INFLUXDB_PORT}:8086",
             )
             p.wait_for(
@@ -170,50 +179,41 @@ class Energy (Service):
             influxdbs_address = self.influxdbs[0].extra[self.network + "_ip"]
         else:
             influxdbs_address = self.influxdbs[0].address
-
-
-        # utils = open('utils.py', 'r').read()
-        # with play_on(pattern_hosts="formulas", roles=self._roles) as p:
-        #     p.copy(display_name="copy ", src="./utils.py", dest="/utils.py")
-        # result = run_command(f"echo '_get_cpu()' >> /utils.py; python3 /utils.py",
-        #                      roles=self._roles, pattern_hosts="formulas")
-
             
         with play_on(pattern_hosts="formulas", roles=self._roles) as p:
             # (TODO) ask for a better way to retrieve a result from remote
+            # maybe by mounting volume.
             p.shell('lscpu > /tmp/lscpu')
             p.fetch(
                 display_name="Retrieving the result of lscpu…",
                 src='/tmp/lscpu', dest='./_tmp_enos_/lscpu', flat=True,
             )
             try :
-                wait(Path('_tmp_enos_/lscpu').is_file, timeout_seconds=10)
-                time.sleep(1)
-                with open('./_tmp_enos_/lscpu') as f: lscpu = f.read()
-                logging.debug(lscpu) ## (does not seem to be awaiting results)
-                cpu_feat = _get_cpu(lscpu)
-                Path('./_tmp_enos_/lscpu').unlink()
-            except (OSError, IOError, KeyError, TimeoutExpired):
+                cpu = CPU('_tmp_enos_/lscpu')
+                wait(cpu._get_cpu_ready, timeout_seconds=10)
+            except (TimeoutExpired):
                 logging.error("Could not retrieve CPU features…")
                 raise
                 
             command=["-s",
                      "--input mongodb --model HWPCReport",
                      f"--uri mongodb://{mongos_address}:{MONGODB_PORT} -d {SENSORS_OUTPUT_DB_NAME} -c {SENSORS_OUTPUT_COL_NAME}",
-                     f"--output influxdb --name power --model HPWCReport",
+                     f"--output influxdb --name hwpc --model HPWCReport",
                      f"--uri {influxdbs_address} --port {INFLUXDB_PORT} --db hwpc_report",
-                     f"--output influxdb --name formula --model PowerReport",
+                     f"--output influxdb --name power --model PowerReport",
                      f"--uri {influxdbs_address} --port {INFLUXDB_PORT} --db power_report",
-                     f"--output influxdb --name formula --model FormulaReport",
-                     f"--uri {influxdbs_address} --port {INFLUXDB_PORT} --db formula_report",
-                     "--formula smartwatts", f"--cpu-ratio-base {cpu_feat[2]}",
-                     f"--cpu-ratio-min {cpu_feat[0]}", f"--cpu-ratio-max {cpu_feat[1]}", 
+                     # vvv Formula report does not have to_influxdb (yet?)
+                     #f"--output influxdb --name formula --model FormulaReport",
+                     #f"--uri {influxdbs_address} --port {INFLUXDB_PORT} --db formula_report",
+                     "--formula smartwatts", f"--cpu-ratio-base {cpu.cpu_nom}",
+                     f"--cpu-ratio-min {cpu.cpu_min}", f"--cpu-ratio-max {cpu.cpu_max}", 
                      "--cpu-error-threshold 2.0", "--dram-error-threshold 2.0",
                      "--disable-dram-formula"] # (TODO) allow configuration
             
             p.docker_container(
                 display_name="Installing smartwatts formula…",
-                name="smartwatts", image="powerapi/smartwatts-formula",
+                name="smartwatts",
+                image=f"powerapi/smartwatts-formula:{SMARTWATTS_VERSION}",
                 detach=True, network_mode="host", recreate=True,
                 command=command,
             )
@@ -233,7 +233,7 @@ class Energy (Service):
         with play_on(pattern_hosts="grafana", roles=self._roles) as p:
             p.docker_container(
                 display_name="Installing Grafana…",
-                name="grafana", image="grafana/grafana",
+                name="grafana", image=f"grafana/grafana:{GRAFANA_VERSION}",
                 detach=True, network_mode="host", recreate=True, state="started",
                 exposed_ports=f"{GRAFANA_PORT}:3000",
             )
@@ -270,7 +270,6 @@ class Energy (Service):
                                  "isDefault": False}
                 ),
             )
-
 
 
             
