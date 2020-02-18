@@ -83,7 +83,7 @@ class Energy (Service):
         assert self.mongos is not None
         assert self.formulas is not None
         assert self.influxdbs is not None
-        ## (TODO) more asserts to be sure the configuration is sound
+        ## (TODO) more simple asserts to be sure the configuration is sound
         
         self.network = network
         self._roles: Roles = {}
@@ -94,6 +94,8 @@ class Energy (Service):
         
         self.priors = priors
 
+        self.cpu_dict = {}
+
 
 
     def deploy(self):
@@ -102,6 +104,15 @@ class Energy (Service):
         with play_on(pattern_hosts="all", roles=self._roles, priors=self.priors) as p:
             p.pip(display_name="Installing python-docker", name="docker")
 
+
+        ## perform a checking and create virtual links
+        with play_on(pattern_hosts="sensors", roles=self._roles) as p:
+            # (TODO) ask if their is a better way to retrieve results
+            # from remote, e.g., by mounting volume?
+            cpu = self._get_cpu(p)
+
+        logging.debug(self.cpu_dict)
+
         # #1 Deploy MongoDB collectors
         with play_on(pattern_hosts="mongos", roles=self._roles) as p:
             p.docker_container(
@@ -109,7 +120,7 @@ class Energy (Service):
                 name="mongodb", image=f"mongo:{MONGODB_VERSION}",
                 detach=True, network_mode="host", state="started",
                 recreate=True,
-                published_ports=[f"{MONGODB_PORT}:27017"], ## (TODO) expose env
+                exposed_ports=[f"{MONGODB_PORT}:27017"],
             )
             p.wait_for(
                 display_name="Waiting for MongoDB to be ready…",
@@ -117,22 +128,26 @@ class Energy (Service):
                 delay=2, timeout=120,
             )
 
+        # (TODO) warning (or raise) if there are too many mongos compared
+        # to the number of sensors 
+
         # #2 Deploy energy sensors
-        if self.network is not None:
-            # This assumes that `discover_network` has been run before
-            # otherwise, extra is not set properly
-            mongos_address = self.mongos[0].extra[self.network + "_ip"]
-        else:
-            mongos_address = self.mongos[0].address
-        
-        with play_on(pattern_hosts="sensors", roles=self._roles) as p:
+        with play_on(pattern_hosts='sensors', roles=self._roles) as p:
+            # sensors report to a specific mongo instance depending on the
+            # type of monitored cpu
+            cpu = self._get_cpu(p)
+
+            keys = list(self.cpu_dict.keys())
+            mongo_index = keys.index(cpu.cpu_name)%len(self._roles['mongos'])
+            mongo_addr = self._get_address(self._roles['mongos'][mongo_index])
+            
             # (TODO) check without volumes, it potentially uses volumes to read about
             # events and containers... maybe it is mandatory then.
-            volumes = ["/sys:/sys",
-                       "/var/lib/docker/containers:/var/lib/docker/containers:ro",
-                       "/tmp/powerapi-sensor-reporting:/reporting"]            
+            # volumes = ["/sys:/sys",
+            # "/var/lib/docker/containers:/var/lib/docker/containers:ro",
+            # "/tmp/powerapi-sensor-reporting:/reporting"]            
             command=['-n sensor-{{inventory_hostname_short}}',
-                     f'-r mongodb -U mongodb://{mongos_address}:27017', ## MONGO
+                     f'-r mongodb -U mongodb://{mongo_addr}:27017',
                      f'-D {SENSORS_OUTPUT_DB_NAME} -C {SENSORS_OUTPUT_COL_NAME}',
                      '-s rapl -o', ## RAPL: Running Average Power Limit (need privileged)
                      '-e RAPL_ENERGY_PKG', # power consumption of all cores + LLc cache
@@ -153,7 +168,7 @@ class Energy (Service):
                 image=f"powerapi/hwpc-sensor:{HWPCSENSOR_VERSION}",
                 detach=True, state="started", recreate=True, network_mode="host",
                 privileged=True,
-                volumes=volumes,
+                # volumes=volumes,
                 command=command,
             )
 
@@ -179,10 +194,18 @@ class Energy (Service):
             influxdbs_address = self.influxdbs[0].extra[self.network + "_ip"]
         else:
             influxdbs_address = self.influxdbs[0].address
-            
+
+        ## FOR EACH CPU type, deploy a formula that will retrieve the proper mongo
+        ## and write in the proper influx. There may be multiple formulas per machine
+        i = 0
+        for cpu_name, cpu in self.cpu_dict.items():
+            with play_on(roles=self._roles["formulas"][i%len(self._roles["formulas"])]) as p:
+                # (TODO) HERE HERHEHRHERHEHRERHEHRE RHEH RHERH EHRHE RH
+
+                
         with play_on(pattern_hosts="formulas", roles=self._roles) as p:
-            # (TODO) ask for a better way to retrieve a result from remote
-            # maybe by mounting volume.
+            ## (TODO) change this, we are not interested in getting lscpu from
+            # machines running formulas...
             p.shell('lscpu > /tmp/lscpu')
             p.fetch(
                 display_name="Retrieving the result of lscpu…",
@@ -198,8 +221,8 @@ class Energy (Service):
             command=["-s",
                      "--input mongodb --model HWPCReport",
                      f"--uri mongodb://{mongos_address}:{MONGODB_PORT} -d {SENSORS_OUTPUT_DB_NAME} -c {SENSORS_OUTPUT_COL_NAME}",
-                     f"--output influxdb --name hwpc --model HPWCReport",
-                     f"--uri {influxdbs_address} --port {INFLUXDB_PORT} --db hwpc_report",
+                     # f"--output influxdb --name hwpc --model HPWCReport",
+                     # f"--uri {influxdbs_address} --port {INFLUXDB_PORT} --db hwpc_report",
                      f"--output influxdb --name power --model PowerReport",
                      f"--uri {influxdbs_address} --port {INFLUXDB_PORT} --db power_report",
                      # vvv Formula report does not have to_influxdb (yet?)
@@ -218,16 +241,7 @@ class Energy (Service):
                 command=command,
             )
             
-        # #5 Deploy the graphana server, (TODO) make it optional
-        grafana_address = None
-        if self.network is not None:
-            # This assumes that `discover_network` has been run before
-            grafana_address = self.grafana[0].extra[self.network + "_ip"]
-        else:
-            # NOTE(msimonin): ping on docker bridge address for ci testing
-            grafana_address = "localhost"
-
-        # (TODO) tag with the proper version of containerS
+        # #5 Deploy the optional grafana server
         if self.grafana is None:
             return
         with play_on(pattern_hosts="grafana", roles=self._roles) as p:
@@ -242,26 +256,15 @@ class Energy (Service):
                 host="localhost", port="3000", state="started",
                 delay=2, timeout=120,
             )
+            ## (TODO) find a better way to add data sources to grafana
+            ## (TODO) connect to multiple InfluxDB
             p.uri(
-                display_name="Add InfluxDB formula reports in Grafana…",
-                url=f"http://{grafana_address}:{GRAFANA_PORT}/api/datasources",
-                user="admin", password="admin",
-                force_basic_auth=True,
-                body_format="json", method="POST", status_code=[200, 409], # 409 means: already added
-                body=json.dumps({"name": "formula",
-                                 "type": "influxdb",
-                                 "url": f"http://{influxdbs_address}:{INFLUXDB_PORT}",
-                                 "access": "proxy",
-                                 "database": "formula_report",
-                                 "isDefault": True}
-                ),
-            )
-            p.uri( ## (TODO) find a better way to add data sources to grafana
                 display_name="Add InfluxDB power reports in Grafana…",
-                url=f"http://{grafana_address}:{GRAFANA_PORT}/api/datasources",
+                url=f"http://localhost:{GRAFANA_PORT}/api/datasources",
                 user="admin", password="admin",
                 force_basic_auth=True,
-                body_format="json", method="POST", status_code=[200, 409], # 409 means: already added
+                body_format="json", method="POST",
+                status_code=[200, 409], # 409 means: already added
                 body=json.dumps({"name": "power",
                                  "type": "influxdb",
                                  "url": f"http://{influxdbs_address}:{INFLUXDB_PORT}",
@@ -271,6 +274,37 @@ class Energy (Service):
                 ),
             )
 
+    
+    def _get_address(self, host) -> str:
+        """Get the IP address of the host.
+        Args:
+            host: the host.
+        Returns:
+            A string representing the ip address of the host.
+        """
+        # This assumes that `discover_network` has been run before
+        # otherwise, extra is not set properly
+        return (host.address, host.extra[self.network + "_ip"]) [self.network is None]
+
+    def _get_cpu(self, p) -> CPU:
+        """Factorizing playbook to retrieve cpu information.
+        Args:
+            p: the playbook being played.
+        Returns:
+            The cpu information, containing min, max, and nominal frequency
+        """
+        p.shell('lscpu > /tmp/lscpu')
+        p.fetch(
+            display_name="Retrieving the result of lscpu…",
+            src='/tmp/lscpu', dest='./_tmp_enos_/lscpu', flat=True,
+        )
+        try :
+            cpu = CPU('_tmp_enos_/lscpu')
+            wait(cpu._get_cpu_ready, timeout_seconds=10)
+        except (TimeoutExpired):
+            logging.error("Could not retrieve CPU features…")
+            raise
+        return cpu
 
             
     def destroy(self):
