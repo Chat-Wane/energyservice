@@ -38,7 +38,6 @@ class Energy (Service):
                  sensors: List[Host] = [], mongos: List[Host] = [],
                  formulas: List[Host] = [], influxdbs = [], grafana: Host = None,
                  network: Network = None,
-                 remote_working_dir: str = "/builds/smartwatts",
                  priors: List[play_on] = [__python3__, __default_python3__, __docker__],
     ):
         """Deploy an energy monitoring stack:
@@ -99,7 +98,7 @@ class Energy (Service):
 
 
     def deploy(self):
-        """Deploy the energy monitoring stack"""
+        """Deploy the energy monitoring stack."""
         # #0 Retrieve requirements
         with play_on(pattern_hosts="all", roles=self._roles, priors=self.priors) as p:
             p.pip(display_name="Installing python-docker", name="docker")
@@ -107,9 +106,10 @@ class Energy (Service):
 
         ## perform a checking and create virtual links
         with play_on(pattern_hosts="sensors", roles=self._roles) as p:
-            # (TODO) ask if their is a better way to retrieve results
+            # (TODO) Is there a better way to retrieve results
             # from remote, e.g., by mounting volume?
             cpu = self._get_cpu(p)
+            self.cpu_dict[cpu.cpu_name] = cpu
 
         logging.debug(self.cpu_dict)
 
@@ -138,7 +138,7 @@ class Energy (Service):
             cpu = self._get_cpu(p)
 
             keys = list(self.cpu_dict.keys())
-            mongo_index = keys.index(cpu.cpu_name)%len(self._roles['mongos'])
+            mongo_index = keys.index(cpu.cpu_name)%len(self.mongos)
             mongo_addr = self._get_address(self._roles['mongos'][mongo_index])
             
             # (TODO) check without volumes, it potentially uses volumes to read about
@@ -187,60 +187,43 @@ class Energy (Service):
                 delay=2, timeout=120,
             )
 
-        # #4 deploy SmartWatts
-        if self.network is not None:
-            # This assumes that `discover_network` has been run before
-            # otherwise, extra is not set properly
-            influxdbs_address = self.influxdbs[0].extra[self.network + "_ip"]
-        else:
-            influxdbs_address = self.influxdbs[0].address
-
-        ## FOR EACH CPU type, deploy a formula that will retrieve the proper mongo
-        ## and write in the proper influx. There may be multiple formulas per machine
+        # #4 deploy SmartWatts (there may be multiple SmartWatts per machine)
+        ## (TODO) start multiple formulas in the same formula container?
         i = 0
         for cpu_name, cpu in self.cpu_dict.items():
-            with play_on(roles=self._roles["formulas"][i%len(self._roles["formulas"])]) as p:
-                # (TODO) HERE HERHEHRHERHEHRERHEHRE RHEH RHERH EHRHE RH
+            with play_on(pattern_hosts =
+                         self._get_address(self.formulas[i%len(self.formulas)]),
+                         roles = self._roles) as p:
 
+                keys = list(self.cpu_dict.keys())
+                mongo_index = keys.index(cpu.cpu_name)%len(self.mongos)
+                mongo_addr = self._get_address(self._roles['mongos'][mongo_index])
+                influxdbs_addr = self._get_address(self.influxdbs[i%len(self.influxdbs)])
                 
-        with play_on(pattern_hosts="formulas", roles=self._roles) as p:
-            ## (TODO) change this, we are not interested in getting lscpu from
-            # machines running formulas...
-            p.shell('lscpu > /tmp/lscpu')
-            p.fetch(
-                display_name="Retrieving the result of lscpu…",
-                src='/tmp/lscpu', dest='./_tmp_enos_/lscpu', flat=True,
-            )
-            try :
-                cpu = CPU('_tmp_enos_/lscpu')
-                wait(cpu._get_cpu_ready, timeout_seconds=10)
-            except (TimeoutExpired):
-                logging.error("Could not retrieve CPU features…")
-                raise
-                
-            command=["-s",
-                     "--input mongodb --model HWPCReport",
-                     f"--uri mongodb://{mongos_address}:{MONGODB_PORT} -d {SENSORS_OUTPUT_DB_NAME} -c {SENSORS_OUTPUT_COL_NAME}",
-                     # f"--output influxdb --name hwpc --model HPWCReport",
-                     # f"--uri {influxdbs_address} --port {INFLUXDB_PORT} --db hwpc_report",
-                     f"--output influxdb --name power --model PowerReport",
-                     f"--uri {influxdbs_address} --port {INFLUXDB_PORT} --db power_report",
-                     # vvv Formula report does not have to_influxdb (yet?)
-                     #f"--output influxdb --name formula --model FormulaReport",
-                     #f"--uri {influxdbs_address} --port {INFLUXDB_PORT} --db formula_report",
-                     "--formula smartwatts", f"--cpu-ratio-base {cpu.cpu_nom}",
-                     f"--cpu-ratio-min {cpu.cpu_min}", f"--cpu-ratio-max {cpu.cpu_max}", 
-                     "--cpu-error-threshold 2.0", "--dram-error-threshold 2.0",
-                     "--disable-dram-formula"] # (TODO) allow configuration
-            
-            p.docker_container(
-                display_name="Installing smartwatts formula…",
-                name="smartwatts",
-                image=f"powerapi/smartwatts-formula:{SMARTWATTS_VERSION}",
-                detach=True, network_mode="host", recreate=True,
-                command=command,
-            )
-            
+                command=["-s",
+                         "--input mongodb --model HWPCReport",
+                         f"--uri mongodb://{mongo_addr}:{MONGODB_PORT}",
+                         f"-d {SENSORS_OUTPUT_DB_NAME} -c {SENSORS_OUTPUT_COL_NAME}",
+                         # f"--output influxdb --name hwpc --model HPWCReport",
+                         # f"--uri {influxdbs_addr} --port {INFLUXDB_PORT} --db hwpc_report",
+                         f'--output influxdb --name "power-{cpu_name}" --model PowerReport',
+                         f"--uri {influxdbs_addr} --port {INFLUXDB_PORT} --db power_report",
+                         # vvv Formula report does not have to_influxdb (yet?)
+                         #f"--output influxdb --name formula --model FormulaReport",
+                         #f"--uri {influxdbs_addr} --port {INFLUXDB_PORT} --db formula_report",
+                         "--formula smartwatts", f"--cpu-ratio-base {cpu.cpu_nom}",
+                         f"--cpu-ratio-min {cpu.cpu_min}", f"--cpu-ratio-max {cpu.cpu_max}", 
+                         "--cpu-error-threshold 2.0", "--dram-error-threshold 2.0",
+                         "--disable-dram-formula"] # (TODO) allow configuration
+                p.docker_container(
+                    display_name="Installing smartwatts formula…",
+                    name="smartwatts",
+                    image=f"powerapi/smartwatts-formula:{SMARTWATTS_VERSION}",
+                    detach=True, network_mode="host", recreate=True,
+                    command=command,
+                )
+            ++i
+        
         # #5 Deploy the optional grafana server
         if self.grafana is None:
             return
@@ -257,22 +240,27 @@ class Energy (Service):
                 delay=2, timeout=120,
             )
             ## (TODO) find a better way to add data sources to grafana
-            ## (TODO) connect to multiple InfluxDB
-            p.uri(
-                display_name="Add InfluxDB power reports in Grafana…",
-                url=f"http://localhost:{GRAFANA_PORT}/api/datasources",
-                user="admin", password="admin",
-                force_basic_auth=True,
-                body_format="json", method="POST",
-                status_code=[200, 409], # 409 means: already added
-                body=json.dumps({"name": "power",
-                                 "type": "influxdb",
-                                 "url": f"http://{influxdbs_address}:{INFLUXDB_PORT}",
-                                 "access": "proxy",
-                                 "database": "power_report",
-                                 "isDefault": False}
-                ),
-            )
+            i = 0
+            for cpu_name, _ in self.cpu_dict.items():
+                influxdbs_addr = self._get_address(self.influxdbs[i%len(self.influxdbs)])
+                p.uri(
+                    display_name="Add InfluxDB power reports in Grafana…",
+                    url=f"http://localhost:{GRAFANA_PORT}/api/datasources",
+                    user="admin", password="admin",
+                    force_basic_auth=True,
+                    body_format="json", method="POST",
+                    status_code=[200, 409], # 409 means: already added
+                    body=json.dumps({"name": f"power-{cpu_name}",
+                                     "type": "influxdb",
+                                     "url": f"http://{influxdbs_addr}:{INFLUXDB_PORT}",
+                                     "access": "proxy",
+                                     "database": "power_report",
+                                     "isDefault": False}
+                    ),
+                )
+                ++i
+        
+        ## (TODO) create a summary of established links between machines
 
     
     def _get_address(self, host) -> str:
@@ -284,7 +272,7 @@ class Energy (Service):
         """
         # This assumes that `discover_network` has been run before
         # otherwise, extra is not set properly
-        return (host.address, host.extra[self.network + "_ip"]) [self.network is None]
+        return host.address if self.network is None else host.extra[self.network + "_ip"]
 
     def _get_cpu(self, p) -> CPU:
         """Factorizing playbook to retrieve cpu information.
