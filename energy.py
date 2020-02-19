@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import re
 from waiting import wait, TimeoutExpired # 1.4.1
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -89,7 +90,6 @@ class Energy (Service):
         self._roles.update(sensors=self.sensors, mongos=self.mongos,
                            formulas=self.formulas, influxdbs=self.influxdbs,
                            grafana=self.grafana)
-        self.remote_working_dir = remote_working_dir
         
         self.priors = priors
 
@@ -113,11 +113,20 @@ class Energy (Service):
 
         logging.debug(self.cpu_dict)
 
+        if (len(self.mongos) > len(self.cpu_dict) or
+            len(self.formulas) > len(self.cpu_dict) or
+            len(self.influxdbs) > len(self.formulas)):
+            logging.warning("""There might be an issue with the setup: too many
+            collectors (stack dbs and analysis), (or) not enough cpu types.
+            It may waste resources.""")
+
+                
         # #1 Deploy MongoDB collectors
         with play_on(pattern_hosts="mongos", roles=self._roles) as p:
             p.docker_container(
                 display_name="Installing mongodb…",
-                name="mongodb", image=f"mongo:{MONGODB_VERSION}",
+                name="mongodb",
+                image=f"mongo:{MONGODB_VERSION}",
                 detach=True, network_mode="host", state="started",
                 recreate=True,
                 exposed_ports=[f"{MONGODB_PORT}:27017"],
@@ -127,9 +136,6 @@ class Energy (Service):
                 host="localhost", port="27017", state="started",
                 delay=2, timeout=120,
             )
-
-        # (TODO) warning (or raise) if there are too many mongos compared
-        # to the number of sensors 
 
         # #2 Deploy energy sensors
         with play_on(pattern_hosts='sensors', roles=self._roles) as p:
@@ -199,6 +205,7 @@ class Energy (Service):
                 mongo_index = keys.index(cpu.cpu_name)%len(self.mongos)
                 mongo_addr = self._get_address(self._roles['mongos'][mongo_index])
                 influxdbs_addr = self._get_address(self.influxdbs[i%len(self.influxdbs)])
+                smartwatts_name = re.sub('[^a-zA-Z0-9_.-]', '', cpu_name)
                 
                 command=["-s",
                          "--input mongodb --model HWPCReport",
@@ -207,7 +214,7 @@ class Energy (Service):
                          # f"--output influxdb --name hwpc --model HPWCReport",
                          # f"--uri {influxdbs_addr} --port {INFLUXDB_PORT} --db hwpc_report",
                          f'--output influxdb --name "power-{cpu_name}" --model PowerReport',
-                         f"--uri {influxdbs_addr} --port {INFLUXDB_PORT} --db power_report",
+                         f'--uri {influxdbs_addr} --port {INFLUXDB_PORT} --db "power-{cpu_name}"',
                          # vvv Formula report does not have to_influxdb (yet?)
                          #f"--output influxdb --name formula --model FormulaReport",
                          #f"--uri {influxdbs_addr} --port {INFLUXDB_PORT} --db formula_report",
@@ -217,7 +224,7 @@ class Energy (Service):
                          "--disable-dram-formula"] # (TODO) allow configuration
                 p.docker_container(
                     display_name="Installing smartwatts formula…",
-                    name="smartwatts",
+                    name=f"smartwatts-{smartwatts_name}",
                     image=f"powerapi/smartwatts-formula:{SMARTWATTS_VERSION}",
                     detach=True, network_mode="host", recreate=True,
                     command=command,
@@ -235,7 +242,7 @@ class Energy (Service):
                 exposed_ports=f"{GRAFANA_PORT}:3000",
             )
             p.wait_for(
-                display_name="Waiting for grafana to be ready…",
+                display_name="Waiting for Grafana to be ready…",
                 host="localhost", port="3000", state="started",
                 delay=2, timeout=120,
             )
@@ -254,7 +261,7 @@ class Energy (Service):
                                      "type": "influxdb",
                                      "url": f"http://{influxdbs_addr}:{INFLUXDB_PORT}",
                                      "access": "proxy",
-                                     "database": "power_report",
+                                     "database": f"power-{cpu_name}",
                                      "isDefault": False}
                     ),
                 )
@@ -293,6 +300,7 @@ class Energy (Service):
             logging.error("Could not retrieve CPU features…")
             raise
         return cpu
+
 
             
     def destroy(self):
@@ -300,65 +308,53 @@ class Energy (Service):
         Destroy the energy monitoring stack.
         This destroys all the container and associated volumes.
         """
-        with play_on(pattern_hosts="grafanas", roles=self._roles) as p:
+        ## perform a checking and create virtual links (TODO) lazy load cpu_dict
+        with play_on(pattern_hosts="sensors", roles=self._roles) as p:
+            # (TODO) Is there a better way to retrieve results
+            # from remote, e.g., by mounting volume?
+            cpu = self._get_cpu(p)
+            self.cpu_dict[cpu.cpu_name] = cpu
+
+        
+        with play_on(pattern_hosts="grafana", roles=self._roles) as p:
             p.docker_container(
-                display_name="Destroying Grafana",
-                name="grafana",
-                state="absent",
+                display_name="Destroying Grafana…", name="grafana", state="absent",
                 force_kill=True,
             )
-
+        
         with play_on(pattern_hosts="sensors", roles=self._roles) as p:
             p.docker_container(
-                display_name="Destroying sensor", name="sensor", state="absent"
-            )
-
-        with play_on(pattern_hosts="mongos", roles=self._roles) as p:
-            p.docker_container(
-                display_name="Destroying MongoDB",
-                name="mongodb",
-                state="absent",
+                display_name="Destroying sensors…", name="powerapi-sensor", state="absent",
                 force_kill=True,
             )
-            ## (TODO) vvvvv what does it do
-            # p.file(path=f"{self.remote_influxdata}", state="absent")
+
+        i = 0
+        for cpu_name, cpu in self.cpu_dict.items():
+            with play_on(pattern_hosts =
+                         self._get_address(self.formulas[i%len(self.formulas)]),
+                         roles = self._roles) as p:
+                smartwatts_name = re.sub('[^a-zA-Z0-9_.-]', '', cpu_name)
+                p.docker_container(
+                    display_name="Destroying SmartWatts…",
+                    name=f"smartwatts-{smartwatts_name}", state="absent",
+                    force_kill=True,
+                )
+            ++i
+        
+        with play_on(pattern_hosts="mongos", roles=self._roles) as p:
+            p.docker_container(
+                display_name="Destroying MongoDBs…", name="mongodb", state="absent",
+                force_kill=True,
+            )
+
+        with play_on(pattern_hosts="influxdbs", roles=self._roles) as p:
+            p.docker_container(
+                display_name="Destroying InfluxDBs…", name="influxdb", state="absent",
+                force_kill=True,
+            )
 
 
 
-    # (TODO) vvvvvvvvvvvvvvvvvvvvvvv
-    # def backup(self, backup_dir: Optional[str] = None):
-    #     """Backup the monitoring stack.
-    #     Args:
-    #         backup_dir (str): path of the backup directory to use.
-    #     """
-    #     if backup_dir is None:
-    #         _backup_dir = Path.cwd()
-    #     else:
-    #         _backup_dir = Path(backup_dir)
+    def backup(self):
+        logging.warning("No backup performed")
 
-    #     _backup_dir = _check_path(_backup_dir)
-
-    #     with play_on(pattern_hosts="collector", roles=self._roles) as p:
-    #         backup_path = os.path.join(self.remote_working_dir, "influxdb-data.tar.gz")
-    #         p.docker_container(
-    #             display_name="Stopping InfluxDB", name="influxdb", state="stopped"
-    #         )
-    #         p.archive(
-    #             display_name="Archiving the data volume",
-    #             path=f"{self.remote_influxdata}",
-    #             dest=backup_path,
-    #         )
-
-    #         p.fetch(
-    #             display_name="Fetching the data volume",
-    #             src=backup_path,
-    #             dest=str(Path(_backup_dir, "influxdb-data.tar.gz")),
-    #             flat=True,
-    #         )
-
-    #         p.docker_container(
-    #             display_name="Restarting InfluxDB",
-    #             name="influxdb",
-    #             state="started",
-    #             force_kill=True,
-    #         )

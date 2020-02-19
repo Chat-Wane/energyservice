@@ -19,7 +19,7 @@ SITE = "nantes"
 # claim the resources
 conf = Configuration.from_settings(job_type="allow_classic_ssh",
                                    job_name="energy-service",
-                                   walltime="02:00:00")
+                                   walltime="01:30:00")
 network = NetworkConfiguration(id="n1",
                                type="prod",
                                roles=["my_network"],
@@ -50,7 +50,7 @@ m = Energy(sensors=roles["compute"], mongos=roles["control"],
            formulas=roles["control"], influxdbs=roles["control"],
            grafana=roles["control"])
 
-m.deploy()
+# m.deploy()
 
 #l.deploy()
 
@@ -58,8 +58,8 @@ ui_address = roles["control"][0].extra["my_network_ip"]
 print("Grafana is available at http://%s:3000" % ui_address)
 print("user=admin, password=admin")
 
-#m.backup()
-#m.destroy()
+# m.backup()
+m.destroy()
 
 # destroy the boxes
 #provider.destroy()
