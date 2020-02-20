@@ -1,8 +1,5 @@
 import json
-import os
-import time
-import re
-from waiting import wait, TimeoutExpired # 1.4.1
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -13,12 +10,9 @@ from utils import _check_path, _to_abs, CPU ## (TODO) import from enoslib
 
 import logging
 
-logging.basicConfig(level=logging.DEBUG)
-
 
 
 SENSORS_OUTPUT_DB_NAME = 'sensors_db'
-SENSORS_OUTPUT_COL_NAME = 'energy'
 SMARTWATTS_CPU_ERROR_THRESHOLD = 2.0
 SMARTWATTS_DRAM_ERROR_THRESHOLD = 2.0
 
@@ -112,21 +106,8 @@ class Energy (Service):
 
 
         ## #0 retrieve cpu data from each host then perform a checking
-        path_lscpu = Path('./_tmp_enos_/lscpus')
-        remote_lscpu = 'tmp/lscpu'
-        with play_on(pattern_hosts='sensors', roles=self._roles) as p:
-            p.shell('lscpu > /tmp/lscpu')
-            p.fetch(
-                display_name="Retrieving the result of lscpu…",
-                src=remote_lscpu, dest=path_lscpu.resolve(), flat=False,
-            )
-            
-        for path_host_name in path_lscpu.iter_dir() if path_host_name.is_dir():
-            path_host_name_lscpu = path_host_name / remote_lscpu
-            cpu = CPU(path_host_name_lscpu.resolve())
-            self.cpuname_to_cpu[cpu.cpu_name] = cpu
-            self.hostname_to_cpu[path_host_name] = cpu
-
+        self._get_cpus()
+        
         logging.debug(self.cpuname_to_cpu)
         logging.debug(self.hostname_to_cpu)
 
@@ -162,15 +143,16 @@ class Energy (Service):
             hostname_to_mongo[hostname] = self._get_address(self._roles['mongos'][mongo_index])
         
         with play_on(pattern_hosts='sensors', roles=self._roles,
-                     extra_vars={'ansible_hostname_to_mongo': hostname_to_mongo}) as p:
+                     extra_vars={'ansible_hostname_to_mongo': hostname_to_mongo,
+                                 'ansible_hostname_to_cpu': self.hostname_to_cpu}) as p:
             # (TODO) check without volumes, it potentially uses volumes to read about
             # events and containers... maybe it is mandatory then.
             volumes = ['/sys:/sys',
                        '/var/lib/docker/containers:/var/lib/docker/containers:ro',
                        '/tmp/powerapi-sensor-reporting:/reporting']            
             command=['-n sensor-{{inventory_hostname_short}}',
-                     f'-r mongodb -U mongodb://{{hostname_to_mongos[inventory_hostname]}}:27017',
-                     f'-D {SENSORS_OUTPUT_DB_NAME} -C {SENSORS_OUTPUT_COL_NAME}',
+                     '-r mongodb -U mongodb://{{ansible_hostname_to_mongo[inventory_hostname]}}:27017',
+                     f'-D {SENSORS_OUTPUT_DB_NAME}', '-C col_{{ansible_hostname_to_cpu[inventory_hostname].cpu_shortname}}',
                      '-s rapl -o',] ## RAPL: Running Average Power Limit (need privileged)
             ## (TODO) double check if these options are available at hardware/OS level
             if self.monitor['cores']: command.append('-e RAPL_ENERGY_PKG')  # power consumption of all cores + LLc cache
@@ -214,11 +196,14 @@ class Energy (Service):
 
         # #4 deploy SmartWatts (there may be multiple SmartWatts per machine)
         ## (TODO) start multiple formulas in the same formula container?
+        ## (TODO) ansiblify instead of sequentially push commands
         i = 0
         for cpu_name, cpu in self.cpuname_to_cpu.items():            
-            mongo_addr = hostname_to_mongo[self._get_address(self.formulas[i%len(self.formulas)])]
+            cpunames = list(self.cpuname_to_cpu.keys())
+            mongo_index = cpunames.index(cpu.cpu_name)%len(self.mongos)
+            mongo_addr = self._get_address(self._roles['mongos'][mongo_index])
             influxdbs_addr = self._get_address(self.influxdbs[i%len(self.influxdbs)])
-            smartwatts_name = re.sub('[^a-zA-Z0-9]', '', cpu_name)
+            smartwatts_name = self._get_smartwatts_name(cpu)
             
             with play_on(pattern_hosts =
                          self._get_address(self.formulas[i%len(self.formulas)]),
@@ -226,11 +211,11 @@ class Energy (Service):
                 command=['-s',
                          '--input mongodb --model HWPCReport',
                          f'--uri mongodb://{mongo_addr}:{MONGODB_PORT}',
-                         f'-d {SENSORS_OUTPUT_DB_NAME} -c {SENSORS_OUTPUT_COL_NAME}',
+                         f'-d {SENSORS_OUTPUT_DB_NAME} -c col_{cpu.cpu_shortname}',
                          # f"--output influxdb --name hwpc --model HPWCReport",
                          # f"--uri {influxdbs_addr} --port {INFLUXDB_PORT} --db hwpc_report",
-                         f'--output influxdb --name power_{smartwatts_name} --model PowerReport',
-                         f'--uri {influxdbs_addr} --port {INFLUXDB_PORT} --db power_{smartwatts_name}',
+                         f'--output influxdb --name power_{cpu.cpu_shortname} --model PowerReport',
+                         f'--uri {influxdbs_addr} --port {INFLUXDB_PORT} --db power_{cpu.cpu_shortname}',
                          # vvv Formula report does not have to_influxdb (yet?)
                          #f"--output influxdb --name formula --model FormulaReport",
                          #f"--uri {influxdbs_addr} --port {INFLUXDB_PORT} --db formula_report",
@@ -242,7 +227,7 @@ class Energy (Service):
                 if not self.monitor['dram'] : command.append('--disable-dram-formula')
                 p.docker_container(
                     display_name='Installing smartwatts formula…',
-                    name=f'smartwatts-{smartwatts_name}',
+                    name=f'{smartwatts_name}',
                     image=f'powerapi/smartwatts-formula:{SMARTWATTS_VERSION}',
                     detach=True, network_mode='host', recreate=True,
                     command=command,
@@ -266,9 +251,9 @@ class Energy (Service):
             )
             ## (TODO) find a better way to add data sources to grafana
             i = 0
-            for cpu_name, _ in self.cpuname_to_cpu.items():
+            for cpu_name, cpu in self.cpuname_to_cpu.items():
                 influxdbs_addr = self._get_address(self.influxdbs[i%len(self.influxdbs)])
-                smartwatts_name = re.sub('[^a-zA-Z0-9]', '', cpu_name)
+                smartwatts_name = self._get_smartwatts_name(cpu)
                 p.uri(
                     display_name='Add InfluxDB power reports in Grafana…',
                     url=f'http://localhost:{GRAFANA_PORT}/api/datasources',
@@ -280,13 +265,39 @@ class Energy (Service):
                                      'type': 'influxdb',
                                      'url': f'http://{influxdbs_addr}:{INFLUXDB_PORT}',
                                      'access': 'proxy',
-                                     'database': f'power_{smartwatts_name}',
+                                     'database': f'power_{cpu.cpu_shortname}',
                                      'isDefault': True}
                     ),
                 )
                 ++i
         
         ## (TODO) create a summary of established links between machines
+        
+    def _get_cpus(self):
+        """Retrieve cpu info of all sensored hosts and put it in
+        dictionaries."""
+        if self.hostname_to_cpu: ## lazy loading
+            return
+
+        local_lscpus = './_tmp_enos_/lscpus'
+        remote_lscpu = 'tmp/lscpu'        
+        ## #1 remove outdated data
+        shutil.rmtree(Path(local_lscpus))
+        
+        ## #2 retrieve new data        
+        with play_on(pattern_hosts='sensors', roles=self._roles) as p:
+            p.shell('lscpu > /tmp/lscpu')
+            p.fetch(
+                display_name='Retrieving the result of lscpu…',
+                src=f'/{remote_lscpu}', dest=f'{local_lscpus}', flat=False,
+            )
+            
+        for path_host_name in Path(local_lscpus).iterdir():
+            path_host_name_lscpu = path_host_name / remote_lscpu
+            cpu = CPU(path_host_name_lscpu.resolve())
+            cpu.get_cpu()
+            self.cpuname_to_cpu[cpu.cpu_name] = cpu
+            self.hostname_to_cpu[path_host_name.name] = cpu
 
     
     def _get_address(self, host) -> str:
@@ -300,37 +311,16 @@ class Energy (Service):
         # otherwise, extra is not set properly
         return host.address if self.network is None else host.extra[self.network + "_ip"]
 
-    def _get_cpu(self, p) -> CPU:
-        """Factorizing playbook to retrieve cpu information.
-        Args:
-            p: the playbook being played.
-        Returns:
-            The cpu information, containing min, max, and nominal frequency.
-        """
-        p.shell('lscpu > /tmp/lscpu')
-        p.fetch(
-            display_name="Retrieving the result of lscpu…",
-            src='/tmp/lscpu', dest='./_tmp_enos_/lscpu', flat=False,
-        )
-        try :
-            cpu = CPU('./_tmp_enos_/lscpu')
-            wait(cpu._get_cpu_ready) #, timeout_seconds=20)
-        except TimeoutExpired:
-            logging.error("Could not retrieve CPU features…")
-            raise
-        return cpu
+    def _get_smartwatts_name(self, cpu):
+        return 'smartwatts_' + cpu.cpu_shortname ## (TODO) remove this function
 
 
             
     def destroy(self):
         """ Destroy the energy monitoring stack. This destroys all
         containers."""
-        ## perform a checking and create virtual links (TODO) lazy load cpuname_to_cpu
-        with play_on(pattern_hosts="sensors", roles=self._roles) as p:
-            cpu = self._get_cpu(p)
-            self.cpuname_to_cpu[cpu.cpu_name] = cpu
-
-        
+        self._get_cpus()
+                
         with play_on(pattern_hosts="grafana", roles=self._roles) as p:
             p.docker_container(
                 display_name="Destroying Grafana…", name="grafana", state="absent",
@@ -348,10 +338,10 @@ class Energy (Service):
             with play_on(pattern_hosts =
                          self._get_address(self.formulas[i%len(self.formulas)]),
                          roles = self._roles) as p:
-                smartwatts_name = re.sub('[^a-zA-Z0-9]', '', cpu_name)
+                smartwatts_name = self._get_smartwatts_name(cpu)
                 p.docker_container(
                     display_name="Destroying SmartWatts…",
-                    name=f"smartwatts-{smartwatts_name}", state="absent",
+                    name=f"{smartwatts_name}", state="absent",
                     force_kill=True,
                 )
             ++i

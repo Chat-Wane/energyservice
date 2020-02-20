@@ -1,6 +1,7 @@
 from pathlib import Path
 from engfmt import Quantity, quant_to_float # 1.1.0
 import subprocess
+import re
 
 
 
@@ -36,9 +37,9 @@ class CPU:
         self.cpu_max = None
         self.cpu_nom = None
         self.cpu_name = None
-
+        self.cpu_shortname = None
     
-    def _get_cpu(self):
+    def get_cpu(self):
         """The function retrieves and stores CPU information (min, max, nominal).
         Returns: True if the CPU data are extracted, false otherwise."""
         with self.path.open('r') as f:
@@ -63,6 +64,7 @@ class CPU:
             self.cpu_nom = round(quant_to_float(
                 Quantity(cpu_dict['Model name'].split('@')[1]))/100000000)
             self.cpu_name = cpu_dict['Model name']
+            self.cpu_shortname = re.sub('[^a-zA-Z0-9]', '', self.cpu_name)
         else:
             print("Error while loading file, entries do not match")
             raise

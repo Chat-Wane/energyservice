@@ -9,28 +9,33 @@ from energy import Energy
 
 import logging
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
 
 
-CLUSTER = "econome"
+CLUSTER1 = "econome"
+CLUSTER2 = "ecotype"
 SITE = "nantes"
 
 # claim the resources
-conf = Configuration.from_settings(job_type="allow_classic_ssh",
-                                   job_name="energy-service",
-                                   walltime="01:00:00")
-network = NetworkConfiguration(id="n1",
-                               type="prod",
-                               roles=["my_network"],
+conf = Configuration.from_settings(job_type='allow_classic_ssh',
+                                   job_name='energy-service',
+                                   walltime='01:00:00')
+network = NetworkConfiguration(id='n1',
+                               type='prod',
+                               roles=['my_network'],
                                site=SITE)
 conf.add_network_conf(network)\
-    .add_machine(roles=["control"],
-                 cluster=CLUSTER,
+    .add_machine(roles=['control'],
+                 cluster=CLUSTER1,
                  nodes=1,
                  primary_network=network)\
-    .add_machine(roles=["compute"],
-                 cluster=CLUSTER,
+    .add_machine(roles=['compute'],
+                 cluster=CLUSTER1,
+                 nodes=2,
+                 primary_network=network)\
+    .add_machine(roles=['compute'],
+                 cluster=CLUSTER2,
                  nodes=1,
                  primary_network=network)\
     .finalize()
@@ -44,17 +49,17 @@ roles = discover_networks(roles, networks)
 
 ## (TODO) add a container to test
 
-#l = Locust(masters=["compute"], mongos=roles["control"])
+#l = Locust(masters=['compute'], mongos=roles['control'])
 
-m = Energy(sensors=roles["compute"], mongos=roles["control"],
-           formulas=roles["control"], influxdbs=roles["control"],
-           grafana=roles["control"])
+m = Energy(sensors=roles['compute'], mongos=roles['control'],
+           formulas=roles['control'], influxdbs=roles['control'],
+           grafana=roles['control'])
 
 m.deploy()
 
 #l.deploy()
 
-ui_address = roles["control"][0].extra["my_network_ip"]
+ui_address = roles['control'][0].extra['my_network_ip']
 print("Grafana is available at http://%s:3000" % ui_address)
 print("user=admin, password=admin")
 
