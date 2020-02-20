@@ -38,15 +38,11 @@ class CPU:
         self.cpu_name = None
 
     
-    def _get_cpu_ready(self) -> bool:
-        """Check if the file is ready. If it is, the function retrieves and stores
-        CPU information (min, max, nominal).
+    def _get_cpu(self):
+        """The function retrieves and stores CPU information (min, max, nominal).
         Returns: True if the CPU data are extracted, false otherwise."""
-        # #1 check file exists
-        if (not self.path.is_file()):
-            return False
-
-        with open('./_tmp_enos_/lscpu') as f: lscpu = f.read()
+        with self.path.open('r') as f:
+            lscpu = f.read()
 
         # #2 check entries exist
         cpu_dict = {
@@ -56,19 +52,19 @@ class CPU:
                            if not line == '')
         }
         
-        ready = ('CPU min MHz' in cpu_dict.keys() and
+        consistent = ('CPU min MHz' in cpu_dict.keys() and
                  'CPU max MHz' in cpu_dict.keys() and
                  'Model name'  in cpu_dict.keys())
 
-        if (ready):
+        if (consistent):
             self.cpu_min = round(float(cpu_dict['CPU min MHz'])/100)
             self.cpu_max = round(float(cpu_dict['CPU max MHz'])/100)
             ## parse to get 22 of: "Intel(R) Xeon(R) CPU E-2660 0 @ 2.20GHz"
             self.cpu_nom = round(quant_to_float(
                 Quantity(cpu_dict['Model name'].split('@')[1]))/100000000)
             self.cpu_name = cpu_dict['Model name']
-            # #3 remove file
-            self.path.unlink()
-
-        return ready
+        else:
+            print("Error while loading file, entries do not match")
+            raise
+            
 

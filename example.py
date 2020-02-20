@@ -13,8 +13,8 @@ logging.basicConfig(level=logging.INFO)
 
 
 
-CLUSTER = "parasilo"
-SITE = "rennes"
+CLUSTER = "econome"
+SITE = "nantes"
 
 # claim the resources
 conf = Configuration.from_settings(job_type="allow_classic_ssh",
@@ -62,4 +62,4 @@ print("user=admin, password=admin")
 # m.destroy()
 
 # destroy the boxes
-#provider.destroy()
+# provider.destroy()

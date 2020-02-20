@@ -99,7 +99,8 @@ class Energy (Service):
         
         self.priors = priors
 
-        self.cpu_dict = {}
+        self.cpuname_to_cpu = {}
+        self.hostname_to_cpu = {}
 
 
 
@@ -110,24 +111,34 @@ class Energy (Service):
             p.pip(display_name='Installing python-docker', name='docker')
 
 
-        ## perform a checking and create virtual links
+        ## #0 retrieve cpu data from each host then perform a checking
+        path_lscpu = Path('./_tmp_enos_/lscpus')
+        remote_lscpu = 'tmp/lscpu'
         with play_on(pattern_hosts='sensors', roles=self._roles) as p:
-            # (TODO) Is there a better way to retrieve results
-            # from remote, e.g., by mounting volume?
-            cpu = self._get_cpu(p)
-            self.cpu_dict[cpu.cpu_name] = cpu
+            p.shell('lscpu > /tmp/lscpu')
+            p.fetch(
+                display_name="Retrieving the result of lscpu…",
+                src=remote_lscpu, dest=path_lscpu.resolve(), flat=False,
+            )
+            
+        for path_host_name in path_lscpu.iter_dir() if path_host_name.is_dir():
+            path_host_name_lscpu = path_host_name / remote_lscpu
+            cpu = CPU(path_host_name_lscpu.resolve())
+            self.cpuname_to_cpu[cpu.cpu_name] = cpu
+            self.hostname_to_cpu[path_host_name] = cpu
 
-        logging.debug(self.cpu_dict)
+        logging.debug(self.cpuname_to_cpu)
+        logging.debug(self.hostname_to_cpu)
 
-        if (len(self.mongos) > len(self.cpu_dict) or
-            len(self.formulas) > len(self.cpu_dict) or
+        if (len(self.mongos) > len(self.cpuname_to_cpu) or
+            len(self.formulas) > len(self.cpuname_to_cpu) or
             len(self.influxdbs) > len(self.formulas)):
             logging.warning("""There might be an issue with the setup: too many
             collectors (stack dbs and analysis), (or) not enough cpu types.
             It may waste resources.""")
 
                 
-        # #1 Deploy MongoDB collectors
+        ## #1 Deploy MongoDB collectors
         with play_on(pattern_hosts='mongos', roles=self._roles) as p:
             p.docker_container(
                 display_name='Installing mongodb…',
@@ -135,7 +146,7 @@ class Energy (Service):
                 image=f'mongo:{MONGODB_VERSION}',
                 detach=True, network_mode='host', state='started',
                 recreate=True,
-                exposed_ports=[f'{MONGODB_PORT}:27017'],
+                published_ports=[f'{MONGODB_PORT}:27017'],
             )
             p.wait_for(
                 display_name='Waiting for MongoDB to be ready…',
@@ -144,22 +155,21 @@ class Energy (Service):
             )
 
         # #2 Deploy energy sensors
-        with play_on(pattern_hosts='sensors', roles=self._roles) as p:
-            # sensors report to a specific mongo instance depending on the
-            # type of monitored cpu
-            cpu = self._get_cpu(p)
-
-            keys = list(self.cpu_dict.keys())
-            mongo_index = keys.index(cpu.cpu_name)%len(self.mongos)
-            mongo_addr = self._get_address(self._roles['mongos'][mongo_index])
-            
+        hostname_to_mongo = {}
+        cpunames = list(self.cpuname_to_cpu.keys())
+        for hostname, cpu in self.hostname_to_cpu.items():
+            mongo_index = cpunames.index(cpu.cpu_name)%len(self.mongos)
+            hostname_to_mongo[hostname] = self._get_address(self._roles['mongos'][mongo_index])
+        
+        with play_on(pattern_hosts='sensors', roles=self._roles,
+                     extra_vars={'ansible_hostname_to_mongo': hostname_to_mongo}) as p:
             # (TODO) check without volumes, it potentially uses volumes to read about
             # events and containers... maybe it is mandatory then.
-            # volumes = ["/sys:/sys",
-            # "/var/lib/docker/containers:/var/lib/docker/containers:ro",
-            # "/tmp/powerapi-sensor-reporting:/reporting"]            
+            volumes = ['/sys:/sys',
+                       '/var/lib/docker/containers:/var/lib/docker/containers:ro',
+                       '/tmp/powerapi-sensor-reporting:/reporting']            
             command=['-n sensor-{{inventory_hostname_short}}',
-                     f'-r mongodb -U mongodb://{mongo_addr}:27017',
+                     f'-r mongodb -U mongodb://{{hostname_to_mongos[inventory_hostname]}}:27017',
                      f'-D {SENSORS_OUTPUT_DB_NAME} -C {SENSORS_OUTPUT_COL_NAME}',
                      '-s rapl -o',] ## RAPL: Running Average Power Limit (need privileged)
             ## (TODO) double check if these options are available at hardware/OS level
@@ -183,7 +193,7 @@ class Energy (Service):
                 image=f'powerapi/hwpc-sensor:{HWPCSENSOR_VERSION}',
                 detach=True, state='started', recreate=True, network_mode='host',
                 privileged=True,
-                # volumes=volumes,
+                volumes=volumes,
                 command=command,
             )
 
@@ -205,25 +215,22 @@ class Energy (Service):
         # #4 deploy SmartWatts (there may be multiple SmartWatts per machine)
         ## (TODO) start multiple formulas in the same formula container?
         i = 0
-        for cpu_name, cpu in self.cpu_dict.items():
+        for cpu_name, cpu in self.cpuname_to_cpu.items():            
+            mongo_addr = hostname_to_mongo[self._get_address(self.formulas[i%len(self.formulas)])]
+            influxdbs_addr = self._get_address(self.influxdbs[i%len(self.influxdbs)])
+            smartwatts_name = re.sub('[^a-zA-Z0-9]', '', cpu_name)
+            
             with play_on(pattern_hosts =
                          self._get_address(self.formulas[i%len(self.formulas)]),
-                         roles = self._roles) as p:
-
-                keys = list(self.cpu_dict.keys())
-                mongo_index = keys.index(cpu.cpu_name)%len(self.mongos)
-                mongo_addr = self._get_address(self._roles['mongos'][mongo_index])
-                influxdbs_addr = self._get_address(self.influxdbs[i%len(self.influxdbs)])
-                smartwatts_name = re.sub('[^a-zA-Z0-9_-]', '', cpu_name)
-                
+                         roles = self._roles) as p:                
                 command=['-s',
                          '--input mongodb --model HWPCReport',
                          f'--uri mongodb://{mongo_addr}:{MONGODB_PORT}',
                          f'-d {SENSORS_OUTPUT_DB_NAME} -c {SENSORS_OUTPUT_COL_NAME}',
                          # f"--output influxdb --name hwpc --model HPWCReport",
                          # f"--uri {influxdbs_addr} --port {INFLUXDB_PORT} --db hwpc_report",
-                         f'--output influxdb --name "power-{smartwatts_name}" --model PowerReport',
-                         f'--uri {influxdbs_addr} --port {INFLUXDB_PORT} --db "power-{smartwatts_name}"',
+                         f'--output influxdb --name power_{smartwatts_name} --model PowerReport',
+                         f'--uri {influxdbs_addr} --port {INFLUXDB_PORT} --db power_{smartwatts_name}',
                          # vvv Formula report does not have to_influxdb (yet?)
                          #f"--output influxdb --name formula --model FormulaReport",
                          #f"--uri {influxdbs_addr} --port {INFLUXDB_PORT} --db formula_report",
@@ -259,9 +266,9 @@ class Energy (Service):
             )
             ## (TODO) find a better way to add data sources to grafana
             i = 0
-            for cpu_name, _ in self.cpu_dict.items():
+            for cpu_name, _ in self.cpuname_to_cpu.items():
                 influxdbs_addr = self._get_address(self.influxdbs[i%len(self.influxdbs)])
-                smartwatts_name = re.sub('[^a-zA-Z0-9_-]', '', cpu_name)
+                smartwatts_name = re.sub('[^a-zA-Z0-9]', '', cpu_name)
                 p.uri(
                     display_name='Add InfluxDB power reports in Grafana…',
                     url=f'http://localhost:{GRAFANA_PORT}/api/datasources',
@@ -273,8 +280,8 @@ class Energy (Service):
                                      'type': 'influxdb',
                                      'url': f'http://{influxdbs_addr}:{INFLUXDB_PORT}',
                                      'access': 'proxy',
-                                     'database': f'power-{smartwatts_name}',
-                                     'isDefault': False}
+                                     'database': f'power_{smartwatts_name}',
+                                     'isDefault': True}
                     ),
                 )
                 ++i
@@ -303,12 +310,12 @@ class Energy (Service):
         p.shell('lscpu > /tmp/lscpu')
         p.fetch(
             display_name="Retrieving the result of lscpu…",
-            src='/tmp/lscpu', dest='./_tmp_enos_/lscpu', flat=True,
+            src='/tmp/lscpu', dest='./_tmp_enos_/lscpu', flat=False,
         )
         try :
-            cpu = CPU('_tmp_enos_/lscpu')
-            wait(cpu._get_cpu_ready, timeout_seconds=20)
-        except (TimeoutExpired):
+            cpu = CPU('./_tmp_enos_/lscpu')
+            wait(cpu._get_cpu_ready) #, timeout_seconds=20)
+        except TimeoutExpired:
             logging.error("Could not retrieve CPU features…")
             raise
         return cpu
@@ -316,14 +323,12 @@ class Energy (Service):
 
             
     def destroy(self):
-        """
-        Destroy the energy monitoring stack.
-        This destroys all the container and associated volumes.
-        """
-        ## perform a checking and create virtual links (TODO) lazy load cpu_dict
+        """ Destroy the energy monitoring stack. This destroys all
+        containers."""
+        ## perform a checking and create virtual links (TODO) lazy load cpuname_to_cpu
         with play_on(pattern_hosts="sensors", roles=self._roles) as p:
             cpu = self._get_cpu(p)
-            self.cpu_dict[cpu.cpu_name] = cpu
+            self.cpuname_to_cpu[cpu.cpu_name] = cpu
 
         
         with play_on(pattern_hosts="grafana", roles=self._roles) as p:
@@ -339,11 +344,11 @@ class Energy (Service):
             )
 
         i = 0
-        for cpu_name, cpu in self.cpu_dict.items():
+        for cpu_name, cpu in self.cpuname_to_cpu.items():
             with play_on(pattern_hosts =
                          self._get_address(self.formulas[i%len(self.formulas)]),
                          roles = self._roles) as p:
-                smartwatts_name = re.sub('[^a-zA-Z0-9_-]', '', cpu_name)
+                smartwatts_name = re.sub('[^a-zA-Z0-9]', '', cpu_name)
                 p.docker_container(
                     display_name="Destroying SmartWatts…",
                     name=f"smartwatts-{smartwatts_name}", state="absent",
