@@ -53,7 +53,8 @@ roles = discover_networks(roles, networks)
 
 m = Energy(sensors=roles['compute'], mongos=roles['control'],
            formulas=roles['control'], influxdbs=roles['control'],
-           grafana=roles['control'])
+           grafana=roles['control'],
+           monitor={'dram':True, 'cores': True})
 
 m.deploy()
 

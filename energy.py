@@ -83,7 +83,6 @@ class Energy (Service):
         assert self.mongos is not None
         assert self.formulas is not None
         assert self.influxdbs is not None
-        ## (TODO) more simple asserts to be sure the configuration is sound
         
         self.network = network
         self._roles: Roles = {}
@@ -100,12 +99,11 @@ class Energy (Service):
 
     def deploy(self):
         """Deploy the energy monitoring stack."""
-        # #0 Retrieve requirements
+        ## #0A Retrieve requirements
         with play_on(pattern_hosts='all', roles=self._roles, priors=self.priors) as p:
             p.pip(display_name='Installing python-docker', name='docker')
 
-
-        ## #0 retrieve cpu data from each host then perform a checking
+        ## #0B retrieve cpu data from each host then perform a checking
         self._get_cpus()
         
         logging.debug(self.cpuname_to_cpu)
@@ -117,7 +115,6 @@ class Energy (Service):
             logging.warning("""There might be an issue with the setup: too many
             collectors (stack dbs and analysis), (or) not enough cpu types.
             It may waste resources.""")
-
                 
         ## #1 Deploy MongoDB collectors
         with play_on(pattern_hosts='mongos', roles=self._roles) as p:
@@ -135,7 +132,7 @@ class Energy (Service):
                 delay=2, timeout=120,
             )
 
-        # #2 Deploy energy sensors
+        ## #2 Deploy energy sensors
         hostname_to_mongo = {}
         cpunames = list(self.cpuname_to_cpu.keys())
         for hostname, cpu in self.hostname_to_cpu.items():
@@ -179,8 +176,8 @@ class Energy (Service):
                 command=command,
             )
 
-        # #3 deploy InfluxDB, it will be the output of SmartWatts and
-        # the input of the optional Grafana.
+        ## #3 deploy InfluxDB, it will be the output of SmartWatts and
+        ## the input of the optional Grafana.
         with play_on(pattern_hosts='influxdbs', roles=self._roles) as p:
             p.docker_container(
                 display_name='Installing InfluxDB…',
@@ -194,7 +191,7 @@ class Energy (Service):
                 delay=2, timeout=120,
             )
 
-        # #4 deploy SmartWatts (there may be multiple SmartWatts per machine)
+        ## #4 deploy SmartWatts (there may be multiple SmartWatts per machine)
         ## (TODO) start multiple formulas in the same formula container?
         ## (TODO) ansiblify instead of sequentially push commands
         i = 0
@@ -234,7 +231,7 @@ class Energy (Service):
                 )
             ++i
         
-        # #5 Deploy the optional grafana server
+        ## #5 Deploy the optional grafana server
         if self.grafana is None:
             return
         with play_on(pattern_hosts='grafana', roles=self._roles) as p:
