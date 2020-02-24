@@ -164,6 +164,7 @@ class Energy (Service):
                             #'-e "CPU_CLK_THREAD_UNHALTED:THREAD_P"', ## nehalem & westmere
                             #'-e "CPU_CLK_THREAD_UNHALTED.REF_XCLK"', # sandy -> broadwell archi, not scaled!
                             #'-e "CPU_CLK_THREAD_UNHALTED.REF_XCLK"', # skylake and newer, must be scale by x4 base ratio.
+                            # '-e CPU_CLK_UNHALTED', (TODO) test with this
                             '-e LLC_MISSES -e INSTRUCTIONS_RETIRED'])
 
             p.docker_container(
@@ -279,9 +280,10 @@ class Energy (Service):
         local_lscpus = './_tmp_enos_/lscpus'
         remote_lscpu = 'tmp/lscpu'        
         ## #1 remove outdated data
-        shutil.rmtree(Path(local_lscpus))
+        if (Path(local_lscpus).exists() and Path(local_lscpus).is_dir()):
+            shutil.rmtree(Path(local_lscpus))
         
-        ## #2 retrieve new data        
+        ## #2 retrieve new data
         with play_on(pattern_hosts='sensors', roles=self._roles) as p:
             p.shell('lscpu > /tmp/lscpu')
             p.fetch(

@@ -1,4 +1,4 @@
-from enoslib.api import discover_networks
+from enoslib.api import play_on, discover_networks
 from enoslib.infra.enos_g5k.provider import G5k
 from enoslib.infra.enos_g5k.configuration import (Configuration,
                                                   NetworkConfiguration)
@@ -6,9 +6,7 @@ from enoslib.service import Locust
 
 from energy import Energy
 
-
 import logging
-
 logging.basicConfig(level=logging.DEBUG)
 
 
@@ -32,13 +30,15 @@ conf.add_network_conf(network)\
                  primary_network=network)\
     .add_machine(roles=['compute'],
                  cluster=CLUSTER1,
-                 nodes=2,
-                 primary_network=network)\
-    .add_machine(roles=['compute'],
-                 cluster=CLUSTER2,
                  nodes=1,
                  primary_network=network)\
     .finalize()
+
+    # .add_machine(roles=['compute'],
+    #              cluster=CLUSTER2,
+    #              nodes=1,
+    #              primary_network=network)\
+
 
 
 
@@ -47,10 +47,7 @@ roles, networks = provider.init()
 
 roles = discover_networks(roles, networks)
 
-## (TODO) add a container to test
-
-#l = Locust(masters=['compute'], mongos=roles['control'])
-
+## #A deploy the energy monitoring stack
 m = Energy(sensors=roles['compute'], mongos=roles['control'],
            formulas=roles['control'], influxdbs=roles['control'],
            grafana=roles['control'],
@@ -58,14 +55,36 @@ m = Energy(sensors=roles['compute'], mongos=roles['control'],
 
 m.deploy()
 
-#l.deploy()
-
 ui_address = roles['control'][0].extra['my_network_ip']
 print("Grafana is available at http://%s:3000" % ui_address)
 print("user=admin, password=admin")
 
-# m.backup()
-# m.destroy()
+## #B deploy a service
+with play_on(pattern_hosts='compute', roles=roles) as p:
+    p.docker_image(#source='load', # Added in ansible 2.8
+                   name='meow-world',
+                   tag='latest',
+                   load_path='/home/brnedelec/meow-world_latest.tar') ## (TODO) automatic or configurable
 
-# destroy the boxes
+with play_on(pattern_hosts='compute', roles=roles) as p:
+    p.docker_container(
+        display_name='Installing meow-world service…',
+        name='meow-world',
+        image='meow-world:latest',
+        detach=True, network_mode='host', state='started',
+        recreate=True,
+        published_ports=['8080:8080'],
+    )
+    p.wait_for(
+        display_name='Waiting for meow-world service to be ready…',
+        host='localhost', port='8080', state='started',
+        delay=2, timeout=120,
+    )
+
+## #C deploy a stress test
+#l = Locust(masters=['compute'], mongos=roles['control'])
+#l.deploy()
+
+
+# m.destroy()
 # provider.destroy()
