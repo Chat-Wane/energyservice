@@ -94,6 +94,8 @@ class Energy (Service):
 
         self.cpuname_to_cpu = {}
         self.hostname_to_cpu = {}
+        self.hostname_to_mongo = {}
+        self.hostname_to_influxdb = {}
 
 
 
@@ -132,15 +134,16 @@ class Energy (Service):
                 delay=2, timeout=120,
             )
 
-        ## #2 Deploy energy sensors
-        hostname_to_mongo = {}
+        ## #2 Deploy energy sensors        
         cpunames = list(self.cpuname_to_cpu.keys())
         for hostname, cpu in self.hostname_to_cpu.items():
             mongo_index = cpunames.index(cpu.cpu_name)%len(self.mongos)
-            hostname_to_mongo[hostname] = self._get_address(self._roles['mongos'][mongo_index])
+            influxdb_index = cpunames.index(cpu.cpu_name)%len(self.influxdbs)
+            self.hostname_to_mongo[hostname] = self._get_address(self._roles['mongos'][mongo_index])
+            self.hostname_to_influxdb[hostname] = self._get_address(self._roles['influxdbs'][influxdb_index])
         
         with play_on(pattern_hosts='sensors', roles=self._roles,
-                     extra_vars={'ansible_hostname_to_mongo': hostname_to_mongo,
+                     extra_vars={'ansible_hostname_to_mongo': self.hostname_to_mongo,
                                  'ansible_hostname_to_cpu': self.hostname_to_cpu}) as p:
             # (TODO) check without volumes, it potentially uses volumes to read about
             # events and containers... maybe it is mandatory then.

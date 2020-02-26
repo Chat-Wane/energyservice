@@ -67,18 +67,9 @@ with play_on(pattern_hosts='compute', roles=roles) as p:
                    load_path='/home/brnedelec/meow-world_latest.tar') ## (TODO) automatic or configurable
 
 
-cpunames = list(m.cpuname_to_cpu.keys())
-
-hostname_to_influxdb = {}
-
-for hostname, cpu in m.hostname_to_cpu.items():
-    influxdb_index = cpunames.index(cpu.cpu_name)%len(m.influxdbs)
-    influxdb_addr = 'http://'+m._get_address(m._roles['influxdbs'][influxdb_index]) + ':8086'
-    hostname_to_influxdb[hostname] = influxdb_addr
-
 with play_on(pattern_hosts='compute', roles=roles,
              extra_vars={'ansible_hostname_to_cpu': m.hostname_to_cpu,
-                         'ansible_hostname_to_influxdb': hostname_to_influxdb}) as p:
+                         'ansible_hostname_to_influxdb': m.hostname_to_influxdb}) as p:
     p.docker_container(
         display_name='Installing meow-world service…',
         name='meow-world',
@@ -87,7 +78,7 @@ with play_on(pattern_hosts='compute', roles=roles,
         recreate=True,
         published_ports=['8080:8080'],
         env={
-            'MONITORING_ENERGY': '{{ansible_hostname_to_influxdb[inventory_hostname]}}',
+            'MONITORING_ENERGY': 'http://{{ansible_hostname_to_influxdb[inventory_hostname]}}:8086',
             'MONITORING_ENERGY_DB': 'power_{{ansible_hostname_to_cpu[inventory_hostname].cpu_shortname}}',
             'MONITORING_ENERGY_CONTAINER': 'meow-world',
         },
