@@ -18,7 +18,7 @@ SITE = "nantes"
 # claim the resources
 conf = Configuration.from_settings(job_type='allow_classic_ssh',
                                    job_name='energy-service',
-                                   walltime='01:00:00')
+                                   walltime='02:30:00')
 network = NetworkConfiguration(id='n1',
                                type='prod',
                                roles=['my_network'],
@@ -66,7 +66,19 @@ with play_on(pattern_hosts='compute', roles=roles) as p:
                    tag='latest',
                    load_path='/home/brnedelec/meow-world_latest.tar') ## (TODO) automatic or configurable
 
-with play_on(pattern_hosts='compute', roles=roles) as p:
+
+cpunames = list(m.cpuname_to_cpu.keys())
+
+hostname_to_influxdb = {}
+
+for hostname, cpu in m.hostname_to_cpu.items():
+    influxdb_index = cpunames.index(cpu.cpu_name)%len(m.influxdbs)
+    influxdb_addr = 'http://'+m._get_address(m._roles['influxdbs'][influxdb_index]) + ':8086'
+    hostname_to_influxdb[hostname] = influxdb_addr
+
+with play_on(pattern_hosts='compute', roles=roles,
+             extra_vars={'ansible_hostname_to_cpu': m.hostname_to_cpu,
+                         'ansible_hostname_to_influxdb': hostname_to_influxdb}) as p:
     p.docker_container(
         display_name='Installing meow-world service…',
         name='meow-world',
@@ -74,6 +86,11 @@ with play_on(pattern_hosts='compute', roles=roles) as p:
         detach=True, network_mode='host', state='started',
         recreate=True,
         published_ports=['8080:8080'],
+        env={
+            'MONITORING_ENERGY': '{{ansible_hostname_to_influxdb[inventory_hostname]}}',
+            'MONITORING_ENERGY_DB': 'power_{{ansible_hostname_to_cpu[inventory_hostname].cpu_shortname}}',
+            'MONITORING_ENERGY_CONTAINER': 'meow-world',
+        },
     )
     p.wait_for(
         display_name='Waiting for meow-world service to be ready…',

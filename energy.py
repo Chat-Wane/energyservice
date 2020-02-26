@@ -164,7 +164,7 @@ class Energy (Service):
                             #'-e "CPU_CLK_THREAD_UNHALTED:THREAD_P"', ## nehalem & westmere
                             #'-e "CPU_CLK_THREAD_UNHALTED.REF_XCLK"', # sandy -> broadwell archi, not scaled!
                             #'-e "CPU_CLK_THREAD_UNHALTED.REF_XCLK"', # skylake and newer, must be scale by x4 base ratio.
-                            # '-e CPU_CLK_UNHALTED', (TODO) test with this
+                            '-e CPU_CLK_UNHALTED',
                             '-e LLC_MISSES -e INSTRUCTIONS_RETIRED'])
 
             p.docker_container(
