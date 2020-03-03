@@ -238,6 +238,32 @@ class Energy (Service):
         ## #5 Deploy the optional grafana server
         if self.grafana is None:
             return
+
+        
+        ## #A prepare dashboard
+        with open('grafana_dashboard.json', 'r') as f:
+            dashboard_json = json.load(f)
+            panel_targets = [None] * len(self.cpuname_to_cpu)
+
+        i = 0
+        for cpu_name, cpu in self.cpuname_to_cpu.items():
+            panel_targets[i] = {
+                'datasource': f'power-{cpu_name}',
+                'groupBy': [{'params':['$__interval'], 'type':'time'},
+                            {'params':['target'], 'type':'tag'}],
+                'measurement': 'power_consumption',
+                'orderByTime': 'ASC',
+                'policy': 'default',
+                'refId': f'{cpu.cpu_shortname}',
+                'resultFormat': 'time_series',
+                'select': [[{'params':['power'], 'type': 'field'},
+                            {'params':[], 'type': 'mean'}]],
+                'tags': [{'key':'target', 'operator':'!=', 'value':'global'},
+                         {'key':'target', 'operator':'!=', 'value':'powerapi-sensor'},
+                         {'key':'target', 'operator':'!=', 'value':'rapl'}]}
+            i = i + 1
+        dashboard_json['dashboard']['panels'][0]['targets'] = panel_targets
+
         with play_on(pattern_hosts='grafana', roles=self._roles) as p:
             p.docker_container(
                 display_name='Installing Grafana…',
@@ -250,7 +276,8 @@ class Energy (Service):
                 host='localhost', port='3000', state='started',
                 delay=2, timeout=120,
             )
-            ## (TODO) find a better way to add data sources to grafana
+
+            ## #B add datasources and fill the dashboard
             i = 0
             for cpu_name, cpu in self.cpuname_to_cpu.items():
                 influxdbs_addr = self._get_address(self.influxdbs[i%len(self.influxdbs)])
@@ -258,8 +285,7 @@ class Energy (Service):
                 p.uri(
                     display_name='Add InfluxDB power reports in Grafana…',
                     url=f'http://localhost:{GRAFANA_PORT}/api/datasources',
-                    user='admin', password='admin',
-                    force_basic_auth=True,
+                    user='admin', password='admin', force_basic_auth=True,
                     body_format='json', method='POST',
                     status_code=[200, 409], # 409 means: already added
                     body=json.dumps({'name': f'power-{cpu_name}',
@@ -267,10 +293,17 @@ class Energy (Service):
                                      'url': f'http://{influxdbs_addr}:{INFLUXDB_PORT}',
                                      'access': 'proxy',
                                      'database': f'power_{cpu.cpu_shortname}',
-                                     'isDefault': True}
-                    ),
+                                     'isDefault': True}),
                 )
-                ++i
+                i = i + 1
+
+            p.uri(
+                display_name='Create a dashboard with all containers…',
+                url='http://localhost:3000/api/dashboards/import',
+                user='admin', password='admin', force_basic_auth=True,
+                body_format='json', method='POST', status_code=[200],
+                body=json.dumps(dashboard_json)
+            )
         
         ## (TODO) create a summary of established links between machines
         

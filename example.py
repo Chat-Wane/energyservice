@@ -18,7 +18,7 @@ SITE = "nantes"
 # claim the resources
 conf = Configuration.from_settings(job_type='allow_classic_ssh',
                                    job_name='energy-service',
-                                   walltime='02:30:00')
+                                   walltime='02:00:00')
 network = NetworkConfiguration(id='n1',
                                type='prod',
                                roles=['my_network'],
@@ -32,12 +32,12 @@ conf.add_network_conf(network)\
                  cluster=CLUSTER1,
                  nodes=1,
                  primary_network=network)\
+    .add_machine(roles=['compute'],
+                 cluster=CLUSTER2,
+                 nodes=1,
+                 primary_network=network)\
     .finalize()
 
-    # .add_machine(roles=['compute'],
-    #              cluster=CLUSTER2,
-    #              nodes=1,
-    #              primary_network=network)\
 
 
 
@@ -72,11 +72,12 @@ with play_on(pattern_hosts='compute', roles=roles,
                          'ansible_hostname_to_influxdb': m.hostname_to_influxdb}) as p:
     p.docker_container(
         display_name='Installing meow-world service…',
-        name='meow-world',
+        name='meow-world-{{inventory_hostname_short}}',
         image='meow-world:latest',
         detach=True, network_mode='host', state='started',
         recreate=True,
         published_ports=['8080:8080'],
+        cpuset_cpus="0-1",
         env={
             'MONITORING_ENERGY': 'http://{{ansible_hostname_to_influxdb[inventory_hostname]}}:8086',
             'MONITORING_ENERGY_DB': 'power_{{ansible_hostname_to_cpu[inventory_hostname].cpu_shortname}}',
