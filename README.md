@@ -54,6 +54,13 @@ The figure below depicts the topology built by this service.
                  (chosen round-robin)   (1 per CPU type)                             (optional)
 ```
 
+## Result
+
+After deployment, and with Grafana enabled, you get the result below.
+
+
+
+
 ## TODO list
 
 - [X] Add a figure to illustrate the topology.
