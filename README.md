@@ -19,19 +19,44 @@ finer grain energy data and export them to
 [InfluxDB](www.influxdata.com). An optional [Grafana](grafana.com)
 uses InfluxDB hosts to display gathered energy data.
 
+If there are more CPU types than machines to host mongodbs, formulas,
+or influxdbs, these are wrapped around available machines. In other
+terms, a machine may host multiple containers of the same type.
+
+In the example below, machines with the role `compute` get a PowerAPI
+sensor. The rest of machines with the role `control` (possibly the
+same set of machines) get databases, SmartWatts, and Grafana.
+
 ```python
 Energy(sensors=roles['compute'], mongos=roles['control'],
        formulas=roles['control'], influxdbs=roles['control'],
        grafana=roles['control'])
 ```
 
-In this example, machines with the role `compute` get a PowerAPI
-sensor. The rest of machines with the role `control` (possibly the
-same set of machines) get databases, SmartWatts, and Grafana.
+The figure below depicts the topology built by this service.
+
+```
+#==============#      #=========#       #==============#       #============#       #=========#
+# econome-1..3 # ---> # mongo 1 # <---> # smartwatts 1 # ----> # influxdb 1 # <---> # grafana #
+#==============#      #=========#       #==============#       #============#       #=========#
+                         ^  ^                                        ^
+#==============#         |  |           #==============#             |
+# ecotype-2..5 #---------'  '---------- # smartwatts 2 # ------------|
+#==============#                        #==============#             |
+                                                                     |
+#==============#      #=========#       #==============#             |
+# other cpu(s) # ---> # mongo 2 # <---> # smartwatts 3 # ------------'
+#==============#      #=========#       #==============#
+
+
+<=============>       <=========>       <==============>       <============>       <=========>
+    sensors             mongos              formulas             influxdbs            grafana
+                 (chosen round-robin)   (1 per CPU type)                             (optional)
+```
 
 ## TODO list
 
-- [ ] Add a figure to illustrate the topology.
+- [X] Add a figure to illustrate the topology.
 - [ ] Mount volumes (mongodbs, influxdbs)
 - [ ] Explain an example that runs services that use the databases to
   get their energy consumption, i.e., through `hostname_to_influx`.
