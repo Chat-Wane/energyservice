@@ -32,12 +32,13 @@ same set of machines) get databases, SmartWatts, and Grafana.
 ## TODO list
 
 - [ ] Add a figure to illustrate the topology.
+- [ ] Mount volumes (mongodbs, influxdbs)
 - [ ] Explain an example that runs services that use the databases to
   get their energy consumption, i.e., through `hostname_to_influx`.
 - [ ] Check internal capabilities of machines and warn or stop
   deployment depending on criticality.
 - [ ] Export or backup
-- [ ] Default configuration of Grafana
+- [X] Default dashboard of Grafana
 - [ ] Expose environments of containers
 - [ ] Provide a summary of deployment, i.e, display the created
   topology
