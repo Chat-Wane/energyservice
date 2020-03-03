@@ -63,12 +63,7 @@ class Energy (Service):
             monitor: metrics that are collected by the sensors (dram, cores, gpu)
                 /!\ Some may not be available due to hardware or OS limitations
         """
-        # (TODO) maybe there is only one mongo, formula, influx, grafana. check
-        # if it can be distributed for real.
         # (TODO) include environment configurations back
-        # (TODO) check what happens with multi CPU machines and multi core
-        # CPU
-        
         # Some initialisation and make mypy happy
         self.sensors = sensors
         self.mongos = mongos
