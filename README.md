@@ -57,8 +57,10 @@ The figure below depicts the topology built by this service.
 ## Result
 
 After deployment, and with Grafana enabled, you get the result below.
+Grafana displays the energy consumed over time by each container
+running on sensored machines.
 
-
+![Monitoring containers](img/monitoring.png)
 
 
 ## TODO list
