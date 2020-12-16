@@ -1,12 +1,16 @@
 # Energy monitoring service
 
-This service aims to provide an easy-to-deploy stack for energy
-monitoring at granularity from machine to container.  This service
-deploys [sensors](powerapi.org) that rely on CPU capabilities
-to monitor power usage.  This service also uses SmartWatts [1]: "<i>a
+An [enoslib](https://gitlab.inria.fr/discovery/enoslib) service
+developed in order to facilitate the deployment of a stack monitoring
+the energy consumption of containers.  This service deploys
+[sensors](powerapi.org) that rely on CPU
+[capabilities](https://en.wikipedia.org/wiki/Perf_(Linux)#RAPL) to
+monitor power usage.  This service also uses SmartWatts [1]: "<i>a
 lightweight power monitoring system that adopts online calibration to
 automatically adjust the CPU and DRAM power models in order to
 maximize the accuracy of runtime power estimations of containers</i>".
+
+
 
 ## Topology
 
@@ -54,6 +58,8 @@ The figure below depicts the topology built by this service.
                  (chosen round-robin)   (1 per CPU type)                             (optional)
 ```
 
+
+
 ## Result
 
 After deployment, and with Grafana enabled, you get the result below.
@@ -62,6 +68,7 @@ running on sensored machines.
 
 ![Monitoring containers](img/monitoring.png)
 
+
 
 ## TODO list
 
@@ -77,6 +84,8 @@ running on sensored machines.
 - [ ] Provide a summary of deployment, i.e, display the created
   topology
 
+
+
 ## References
 
 [1] [SmartWatts: Self-Calibrating Software-Defined Power Meter for
@@ -84,3 +93,9 @@ Containers](https://arxiv.org/pdf/2001.02505.pdf). Guillaume Fieni,
 Romain Rouvoy, and Lionel Seinturier. <i>The 20th IEEE/ACM
 International Symposium on Cluster, Cloud and Internet Computing
 (CCGrid)</i>, 2020.
+
+
+## Acknowledgments
+
+This work was partially funded by the ADEME French Environment and
+Energy Management Agency (PERFECTO 2018), and Sigma Informatique.
