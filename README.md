@@ -72,17 +72,26 @@ running on sensored machines.
 
 ## TODO list
 
-- [X] Add a figure to illustrate the topology.
-- [ ] Mount volumes (mongodbs, influxdbs)
-- [ ] Explain an example that runs services that use the databases to
-  get their energy consumption, i.e., through `hostname_to_influx`.
-- [ ] Check internal capabilities of machines and warn or stop
-  deployment depending on criticality.
-- [ ] Export or backup
-- [X] Default dashboard of Grafana
-- [ ] Expose environments of containers
-- [ ] Provide a summary of deployment, i.e, display the created
-  topology
+- [ ] Automatically detect valid configurations for sensors, and allow
+  users to add events to listen. Careful: if there are multiple
+  clusters and the goal is to compare them, the configurations must be
+  identical; however if the goal is to be the most accurate, the
+  configurations must be the best of each.
+- [ ] Different deployment strategies. For instance, one where each
+  machine gets its own dedicated energy monitoring stack; or another
+  where databases are shared between clusters.
+- [X] Add a figure to illustrate the topology in the readme.
+- [ ] Mount volumes for databases (mongodbs, influxdbs). The size of
+  these volumes could depend on the duration of experiments, the
+  number of machines, and the monitoring frequency.
+- [ ] Provide an example that runs services that use the databases to
+  get their energy consumption through `hostname_to_influx`.
+- [ ] Export and/or backup.
+- [X] Default dashboard for Grafana. Could provide more insights
+  depending clusters and their configurations.
+- [ ] Allow users to modify the environments of containers.
+- [ ] Provide a deployment summary by displaying the topology,
+  i.e. which machines host which containers.
 
 
 

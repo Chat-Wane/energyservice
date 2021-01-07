@@ -1,0 +1,4 @@
+# You can deploy the energy service without enoslib itself. Run with
+# python 3.9.1 and dependencies are the following:
+enoslib=5.4.4
+engfmt=1.1.0

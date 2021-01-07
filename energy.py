@@ -20,11 +20,11 @@ GRAFANA_PORT = 3000
 MONGODB_PORT = 27017
 INFLUXDB_PORT = 8086
 
-INFLUXDB_VERSION = '1.7-alpine'
-MONGODB_VERSION = '4.2.3'
-GRAFANA_VERSION = 'latest' ## (TODO change)
+INFLUXDB_VERSION = '1.8.3-alpine'
+MONGODB_VERSION = '4.4.3'
+GRAFANA_VERSION = '7.3.6' ## (TODO change)
 HWPCSENSOR_VERSION = '0.1.1'
-SMARTWATTS_VERSION = '0.4.4'
+SMARTWATTS_VERSION = '0.4.4' # 0.5.0
 
 
 
@@ -98,7 +98,7 @@ class Energy (Service):
         """Deploy the energy monitoring stack."""
         ## #0A Retrieve requirements
         with play_on(pattern_hosts='all', roles=self._roles, priors=self.priors) as p:
-            p.pip(display_name='Installing python-docker', name='docker')
+            p.pip(display_name='Installing python-docker…', name='docker')
 
         ## #0B retrieve cpu data from each host then perform a checking
         self._get_cpus()
@@ -119,8 +119,11 @@ class Energy (Service):
                 display_name='Installing mongodb…',
                 name='mongodb',
                 image=f'mongo:{MONGODB_VERSION}',
-                detach=True, network_mode='host', state='started',
+                detach=True,
+                # network_mode='host',
+                state='started',
                 recreate=True,
+                exposed_ports=[f'27017'],
                 published_ports=[f'{MONGODB_PORT}:27017'],
             )
             p.wait_for(

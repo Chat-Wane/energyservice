@@ -18,7 +18,7 @@ SITE = "nantes"
 # claim the resources
 conf = Configuration.from_settings(job_type='allow_classic_ssh',
                                    job_name='energy-service',
-                                   walltime='02:00:00')
+                                   walltime='01:00:00')
 network = NetworkConfiguration(id='n1',
                                type='prod',
                                roles=['my_network'],
@@ -32,13 +32,7 @@ conf.add_network_conf(network)\
                  cluster=CLUSTER1,
                  nodes=1,
                  primary_network=network)\
-    .add_machine(roles=['compute'],
-                 cluster=CLUSTER2,
-                 nodes=1,
-                 primary_network=network)\
     .finalize()
-
-
 
 
 
