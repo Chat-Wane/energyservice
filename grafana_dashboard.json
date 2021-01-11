@@ -64,7 +64,7 @@
                 "timeFrom":null,
                 "timeRegions":[ ],
                 "timeShift":null,
-                "title":"Energy consumed per container (Watt)",
+                "title":"Energy consumption of containers (Joule)",
                 "tooltip":{
                     "shared":true,
                     "sort":0,

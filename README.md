@@ -72,6 +72,8 @@ running on sensored machines.
 
 ## TODO list
 
+- [ ] Deploy heartbeat services to make sure the stack is alive and
+  well. If something breaks, recreate and log it.
 - [ ] Automatically detect valid configurations for sensors, and allow
   users to add events to listen. Careful: if there are multiple
   clusters and the goal is to compare them, the configurations must be

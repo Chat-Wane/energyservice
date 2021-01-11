@@ -1,12 +1,13 @@
+from cpu import CPU
+
 import json
 import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
-
 from enoslib.api import play_on, __python3__, __default_python3__, __docker__
 from enoslib.types import Host, Roles, Network
-from service import Service ## (TODO import from enoslib)
-from utils import _check_path, _to_abs, CPU ## (TODO) import from enoslib
+from enoslib.service.service import Service 
+from enoslib.service.utils import _check_path, _to_abs
 
 import logging
 
@@ -22,9 +23,9 @@ INFLUXDB_PORT = 8086
 
 INFLUXDB_VERSION = '1.8.3-alpine'
 MONGODB_VERSION = '4.4.3'
-GRAFANA_VERSION = '7.3.6' ## (TODO change)
+GRAFANA_VERSION = '7.3.6'
 HWPCSENSOR_VERSION = '0.1.1'
-SMARTWATTS_VERSION = '0.4.4' # 0.5.0
+SMARTWATTS_VERSION = '0.5.0'
 
 
 
@@ -112,7 +113,13 @@ class Energy (Service):
             logging.warning("""There might be an issue with the setup: too many
             collectors (stack dbs and analysis), (or) not enough cpu types.
             It may waste resources.""")
-                
+
+
+        ## #0C clean everything to make sure that interdependency
+        ## conditions are met (needed since restarting without it led
+        ## to early crashes of smartwatts formula…)
+        self.destroy()
+            
         ## #1 Deploy MongoDB collectors
         with play_on(pattern_hosts='mongos', roles=self._roles) as p:
             p.docker_container(
@@ -192,7 +199,7 @@ class Energy (Service):
                 host='localhost', port='8086', state='started',
                 delay=2, timeout=120,
             )
-
+            
         ## #4 deploy SmartWatts (there may be multiple SmartWatts per machine)
         ## (TODO) start multiple formulas in the same formula container?
         ## (TODO) ansiblify instead of sequentially push commands
