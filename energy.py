@@ -126,12 +126,10 @@ class Energy (Service):
                 display_name='Installing mongodb…',
                 name='mongodb',
                 image=f'mongo:{MONGODB_VERSION}',
-                detach=True,
-                # network_mode='host',
-                state='started',
-                recreate=True,
+                detach=True, state='started', recreate=True,
                 exposed_ports=[f'27017'],
                 published_ports=[f'{MONGODB_PORT}:27017'],
+                volumes='/tmp/:/data/db',
             )
             p.wait_for(
                 display_name='Waiting for MongoDB to be ready…',
@@ -162,7 +160,7 @@ class Energy (Service):
             ## (TODO) double check if these options are available at hardware/OS level
             if self.monitor['cores']: command.append('-e RAPL_ENERGY_PKG')  # power consumption of all cores + LLc cache
             if self.monitor['dram'] : command.append('-e RAPL_ENERGY_DRAM')  # power consumption of DRAM
-            # if self.monitor['cores']: command.append('-e RAPL_ENERGY_CORES')  # power consumption of all cores on socket
+            if self.monitor['cores']: command.append('-e RAPL_ENERGY_CORES')  # power consumption of all cores on socket
             if self.monitor['gpu']  : command.append('-e RAPL_ENERGY_GPU')  # power consumption of GPU
             command.extend(['-s msr -e TSC -e APERF -e MPERF',
 		            '-c core', ## CORE 
@@ -191,8 +189,9 @@ class Energy (Service):
             p.docker_container(
                 display_name='Installing InfluxDB…',
                 name='influxdb', image=f'influxdb:{INFLUXDB_VERSION}',
-                detach=True, state='started', recreate=True, network_mode='host',
-                exposed_ports=f'{INFLUXDB_PORT}:8086',
+                detach=True, state='started', recreate=True,
+                exposed_ports='8086',
+                published_ports=f'{INFLUXDB_PORT}:8086',
             )
             p.wait_for(
                 display_name='Waiting for InfluxDB to be ready…',
@@ -273,8 +272,10 @@ class Energy (Service):
             p.docker_container(
                 display_name='Installing Grafana…',
                 name='grafana', image=f'grafana/grafana:{GRAFANA_VERSION}',
-                detach=True, network_mode='host', recreate=True, state='started',
-                exposed_ports=f'{GRAFANA_PORT}:3000',
+                detach=True, recreate=True, state='started',
+                #exposed_ports='3000',
+                network_mode='host', # not very clean "host"
+                # published_ports=f'{GRAFANA_PORT}:3000',
             )
             p.wait_for(
                 display_name='Waiting for Grafana to be ready…',
@@ -326,7 +327,7 @@ class Energy (Service):
         
         ## #2 retrieve new data
         with play_on(pattern_hosts='sensors', roles=self._roles) as p:
-            p.shell('lscpu > /tmp/lscpu')
+            p.shell(f'lscpu > /{remote_lscpu}')
             p.fetch(
                 display_name='Retrieving the result of lscpu…',
                 src=f'/{remote_lscpu}', dest=f'{local_lscpus}', flat=False,
